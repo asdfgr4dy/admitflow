@@ -204,6 +204,13 @@
         if (announcementModal.dataset.open === 'true') window.bootstrap.Modal.getOrCreateInstance(announcementModal).show();
     }
 
+    if (window.bootstrap?.Modal) {
+        document.querySelectorAll('[data-create-form-modal]').forEach(modal => {
+            modal.addEventListener('shown.bs.modal', () => modal.querySelector('.is-invalid, input:not([type="hidden"]), select, textarea')?.focus());
+            if (modal.dataset.open === 'true') window.bootstrap.Modal.getOrCreateInstance(modal).show();
+        });
+    }
+
     document.querySelectorAll('[data-page-size-select]').forEach(select => select.addEventListener('change', () => {
         const url = new URL(window.location.href);
         url.searchParams.set(select.dataset.pageSizeSelect, select.value);

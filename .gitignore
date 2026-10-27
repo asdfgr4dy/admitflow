@@ -38,4 +38,4 @@
 
 # User-uploaded avatars and runtime data
 /storage/avatars/*
-!/storage/avatars/.gitkeep
+!/storage/avatars/.gitkeepgit status

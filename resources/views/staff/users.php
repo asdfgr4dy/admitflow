@@ -1,14 +1,7 @@
 <section class="staff-wrap container-xl admin-users-page">
     <div class="staff-heading"><div><p class="eyebrow">Administrator · Access control</p><h1>User administration.</h1><p>Staff accounts are created here. Public registration can only create student accounts.</p></div><a href="/admin" class="btn btn-outline-navy">Back to dashboard</a></div>
     <section class="settings-section">
-        <div class="section-heading"><div><p class="eyebrow">Authorized staff</p><h2>Create a staff account.</h2></div></div>
-        <form method="post" action="/staff/user/save" class="settings-inline-form user-create-form">
-            <input type="hidden" name="_csrf" value="<?= e(csrf_token()) ?>">
-            <div><label for="staff_name">Full name</label><input class="form-control" id="staff_name" name="full_name" maxlength="160" required></div>
-            <div><label for="staff_email">Email address</label><input class="form-control" id="staff_email" name="email" type="email" maxlength="254" required></div>
-            <div><label for="staff_role">Role</label><select class="form-select" id="staff_role" name="role" required><option value="reviewer">Admissions reviewer</option><option value="admin">Administrator</option></select></div>
-            <button class="btn btn-amber" type="submit"><i class="bi bi-person-plus" aria-hidden="true"></i> Create staff account</button>
-        </form>
+        <div class="section-heading"><div><p class="eyebrow">Authorized staff</p><h2>Staff accounts.</h2></div><button class="btn btn-amber" type="button" data-bs-toggle="modal" data-bs-target="#createStaffAccountModal"><i class="bi bi-person-plus" aria-hidden="true"></i> Create staff account</button></div>
         <p class="form-hint">No password is shown or emailed. Share the time-limited setup link securely so the staff member can choose a password and then sign in.</p>
         <?php if (is_string($staffSetupLink ?? null)): ?>
             <div class="staff-setup-link" role="status"><strong>One-time password setup link</strong><p>This link expires in 30 minutes and can be used once. Share it only with the intended account holder.</p><a href="<?= e($staffSetupLink) ?>"><?= e($staffSetupLink) ?></a></div>
@@ -65,3 +58,14 @@
     <?php endforeach; ?>
     <div class="alert alert-info">Account changes are audit logged. Deactivation invalidates existing sessions on their next request. The system prevents removing the last active administrator account.</div>
 </section>
+
+<div class="modal fade admitflow-form-modal" id="createStaffAccountModal" tabindex="-1" aria-labelledby="createStaffAccountTitle" aria-hidden="true" data-create-form-modal data-open="<?= !empty($staffCreateFormOpen) ? 'true' : 'false' ?>">
+    <div class="modal-dialog modal-dialog-centered modal-lg modal-dialog-scrollable"><div class="modal-content">
+        <form method="post" action="/staff/user/save" data-submit-once>
+            <input type="hidden" name="_csrf" value="<?= e(csrf_token()) ?>">
+            <div class="modal-header"><div><p class="eyebrow">Administrator · Access control</p><h2 class="modal-title" id="createStaffAccountTitle">Create a staff account</h2><p>No password is created or sent. The staff member chooses one using a time-limited setup link.</p></div><button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close create staff account form"></button></div>
+            <div class="modal-body"><div class="mb-3"><label class="form-label" for="staff_name">Full name</label><input class="form-control" id="staff_name" name="full_name" value="<?= e($staffCreateFormValues['full_name'] ?? '') ?>" maxlength="160" required></div><div class="mb-3"><label class="form-label" for="staff_email">Email address</label><input class="form-control" id="staff_email" name="email" type="email" value="<?= e($staffCreateFormValues['email'] ?? '') ?>" maxlength="254" required></div><div><label class="form-label" for="staff_role">Role</label><select class="form-select" id="staff_role" name="role" required><option value="reviewer" <?= ($staffCreateFormValues['role'] ?? 'reviewer') === 'reviewer' ? 'selected' : '' ?>>Admissions reviewer</option><option value="admin" <?= ($staffCreateFormValues['role'] ?? '') === 'admin' ? 'selected' : '' ?>>Administrator</option></select></div></div>
+            <div class="modal-footer"><button type="button" class="btn btn-outline-navy" data-bs-dismiss="modal">Cancel</button><button class="btn btn-navy" type="submit" data-loading-label="Creating account...">Create account</button></div>
+        </form>
+    </div></div>
+</div>

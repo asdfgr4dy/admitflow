@@ -594,6 +594,20 @@ try {
                     $database->rollBack();
                 }
                 flash('warning', $error->getMessage());
+                if ($path === '/staff/program/save' && (int) ($_POST['program_id'] ?? 0) < 1) {
+                    $_SESSION['academic_create_form_type'] = 'program';
+                } elseif ($path === '/staff/year/save' && (int) ($_POST['year_id'] ?? 0) < 1) {
+                    $_SESSION['academic_create_form_type'] = 'year';
+                } elseif ($path === '/staff/requirement/save' && (int) ($_POST['requirement_id'] ?? 0) < 1) {
+                    $_SESSION['academic_create_form_type'] = 'requirement';
+                } elseif ($path === '/staff/user/save' && (int) ($_POST['user_id'] ?? 0) < 1) {
+                    $_SESSION['staff_create_form_open'] = true;
+                    $_SESSION['staff_create_form_values'] = array_intersect_key($_POST, array_flip(['full_name', 'email', 'role']));
+                }
+                if (isset($_SESSION['academic_create_form_type'])) {
+                    $_SESSION['academic_create_form_values'] = array_intersect_key($_POST, array_flip(['code', 'name', 'label', 'starts_on', 'ends_on', 'application_deadline', 'is_open', 'allowed_extensions', 'max_file_size_bytes', 'academic_program_id', 'academic_year_id', 'instructions', 'is_required', 'is_active']));
+                    $_SESSION['academic_create_form_error'] = $error->getMessage();
+                }
                 if (in_array($path, ['/staff/announcement/save', '/staff/announcement/delete'], true)) {
                     if ($path === '/staff/announcement/save') {
                         $returnQuery = array_filter(['state' => (string) ($_POST['return_state'] ?? ''), 'audience' => (string) ($_POST['return_audience'] ?? ''), 'q' => (string) ($_POST['return_q'] ?? '')], static fn (string $value): bool => $value !== '');
@@ -607,6 +621,12 @@ try {
                 }
                 if ($path === '/staff/academic-setting/delete') {
                     redirect('/staff/settings' . (($_POST['setting_type'] ?? '') === 'requirement' ? '#requirements' : (($_POST['setting_type'] ?? '') === 'year' ? '#year-settings' : '#program-settings')));
+                }
+                if (in_array($path, ['/staff/program/save', '/staff/year/save', '/staff/requirement/save'], true)) {
+                    redirect('/staff/settings');
+                }
+                if ($path === '/staff/user/save') {
+                    redirect('/staff/users');
                 }
                 $applicationId = (int) ($_POST['application_id'] ?? 0);
                 if ($applicationId > 0 && in_array($path, ['/staff/interview/save', '/staff/interview/reschedule', '/staff/interview/update', '/staff/enrollment/checklist'], true)) {
@@ -828,10 +848,11 @@ try {
     if ($path === '/portal') {
         $user = require_student();
         $application = ApplicationService::current($database, (int) $user['id']);
+        $printableApplication = $application === null ? null : ApplicationService::printableSummary($database, (int) $user['id']);
         $documents = $application === null ? [] : ApplicationService::documents($database, (int) $user['id'], (int) $application['id']);
         $notices = AnnouncementService::activeForUser($database, $user, 3);
         $interviews = $application === null ? [] : ApplicationService::interviews($database, (int) $user['id'], (int) $application['id']);
-        render_page('student/portal', ['title' => 'Student portal', 'user' => $user, 'application' => $application, 'documents' => $documents, 'announcements' => $notices, 'interviews' => $interviews]);
+        render_page('student/portal', ['title' => 'Student portal', 'user' => $user, 'application' => $application, 'printableApplication' => $printableApplication, 'generatedAt' => new DateTimeImmutable('now', new DateTimeZone('Asia/Manila')), 'documents' => $documents, 'announcements' => $notices, 'interviews' => $interviews]);
         exit;
     }
 
@@ -1205,7 +1226,11 @@ try {
             render_page('errors/not-ready', ['title' => 'Check academic setting filters', 'message' => $error->getMessage()]);
             exit;
         }
-        render_page('staff/settings', ['title' => 'Academic settings', 'user' => $user] + $settingsLists);
+        $createFormType = (string) ($_SESSION['academic_create_form_type'] ?? '');
+        $createFormValues = is_array($_SESSION['academic_create_form_values'] ?? null) ? $_SESSION['academic_create_form_values'] : [];
+        $createFormError = (string) ($_SESSION['academic_create_form_error'] ?? '');
+        unset($_SESSION['academic_create_form_type'], $_SESSION['academic_create_form_values'], $_SESSION['academic_create_form_error']);
+        render_page('staff/settings', ['title' => 'Academic settings', 'user' => $user, 'createFormType' => $createFormType, 'createFormValues' => $createFormValues, 'createFormError' => $createFormError] + $settingsLists);
         exit;
     }
 
@@ -1325,8 +1350,11 @@ try {
             ['key' => 'student', 'id' => 'student-accounts', 'title' => 'Student accounts'],
         ], static fn (array $category): bool => $roleFilter === '' || $category['key'] === $roleFilter));
         $staffSetupLink = $_SESSION['staff_setup_link'] ?? null;
+        $staffCreateFormOpen = !empty($_SESSION['staff_create_form_open']);
+        $staffCreateFormValues = is_array($_SESSION['staff_create_form_values'] ?? null) ? $_SESSION['staff_create_form_values'] : [];
+        unset($_SESSION['staff_create_form_open'], $_SESSION['staff_create_form_values']);
         unset($_SESSION['staff_setup_link']);
-        render_page('staff/users', ['title' => 'User administration', 'user' => $user, 'accountsByRole' => $accountsByRole, 'accountTotals' => $accountTotals, 'userCategories' => $userCategories, 'paginationByRole' => $paginationByRole, 'userFilters' => $userFilters, 'staffSetupLink' => $staffSetupLink]);
+        render_page('staff/users', ['title' => 'User administration', 'user' => $user, 'accountsByRole' => $accountsByRole, 'accountTotals' => $accountTotals, 'userCategories' => $userCategories, 'paginationByRole' => $paginationByRole, 'userFilters' => $userFilters, 'staffSetupLink' => $staffSetupLink, 'staffCreateFormOpen' => $staffCreateFormOpen, 'staffCreateFormValues' => $staffCreateFormValues]);
         exit;
     }
 

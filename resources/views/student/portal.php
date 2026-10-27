@@ -9,6 +9,7 @@ $statusLabels = [
     'declined' => 'Declined',
     'enrolled' => 'Enrolled',
 ];
+$printableApplication = is_array($printableApplication ?? null) ? $printableApplication : null;
 $verifiedDocuments = count(array_filter($documents, static fn (array $document): bool => ($document['review_status'] ?? '') === 'verified'));
 $portalNotifications = is_array($notificationFeed['items'] ?? null) ? $notificationFeed['items'] : [];
 $nextPortalNotification = null;
@@ -98,9 +99,9 @@ $firstName = explode(' ', trim($user['full_name']))[0] ?? 'Student';
                 <div><span>Submitted</span><strong><?= !empty($application['submitted_at']) ? e(date('M j, Y', strtotime($application['submitted_at'] . ' UTC'))) : 'Not submitted' ?></strong></div>
             </div>
             <div class="student-print-actions no-print">
-                <a class="btn btn-outline-navy" href="/application/print"><i class="bi bi-printer" aria-hidden="true"></i> Print application</a>
-                <?php if (in_array($application['status'], ['accepted', 'enrolled'], true)): ?><a class="btn btn-outline-navy" href="/application/acceptance-letter"><i class="bi bi-file-earmark-check" aria-hidden="true"></i> Print acceptance letter</a><?php else: ?><span class="student-print-unavailable">Acceptance letter is available after acceptance.</span><?php endif; ?>
-                <?php if ($application['status'] === 'enrolled'): ?><a class="btn btn-outline-navy" href="/application/enrollment-confirmation"><i class="bi bi-card-checklist" aria-hidden="true"></i> Print enrollment confirmation</a><?php else: ?><span class="student-print-unavailable">Enrollment confirmation is available after enrollment is complete.</span><?php endif; ?>
+                <?php if ($printableApplication !== null): ?><button class="btn btn-outline-navy" type="button" data-bs-toggle="modal" data-bs-target="#applicationSummaryModal"><i class="bi bi-printer" aria-hidden="true"></i> Application summary</button><?php endif; ?>
+                <?php if ($printableApplication !== null && ApplicationService::canPrintAcceptance($printableApplication)): ?><button class="btn btn-outline-navy" type="button" data-bs-toggle="modal" data-bs-target="#acceptanceLetterModal"><i class="bi bi-file-earmark-check" aria-hidden="true"></i> Acceptance letter</button><?php else: ?><span class="student-print-unavailable">Acceptance letter is available after acceptance.</span><?php endif; ?>
+                <?php if ($printableApplication !== null && ApplicationService::canPrintEnrollment($printableApplication)): ?><button class="btn btn-outline-navy" type="button" data-bs-toggle="modal" data-bs-target="#enrollmentConfirmationModal"><i class="bi bi-card-checklist" aria-hidden="true"></i> Enrollment confirmation</button><?php else: ?><span class="student-print-unavailable">Enrollment confirmation is available after enrollment is complete.</span><?php endif; ?>
             </div>
             <?php if ($currentStage >= 0): ?>
                 <div class="student-progress-wrap">
@@ -188,3 +189,21 @@ $firstName = explode(' ', trim($user['full_name']))[0] ?? 'Student';
         </section>
     <?php endif; ?>
 </section>
+
+<?php if ($printableApplication !== null): ?>
+    <?php foreach ([
+        ['type' => 'summary', 'id' => 'applicationSummaryModal', 'title' => 'Application summary', 'available' => true, 'printUrl' => '/application/print'],
+        ['type' => 'acceptance', 'id' => 'acceptanceLetterModal', 'title' => 'Acceptance letter', 'available' => ApplicationService::canPrintAcceptance($printableApplication), 'printUrl' => '/application/acceptance-letter'],
+        ['type' => 'enrollment', 'id' => 'enrollmentConfirmationModal', 'title' => 'Enrollment confirmation', 'available' => ApplicationService::canPrintEnrollment($printableApplication), 'printUrl' => '/application/enrollment-confirmation'],
+    ] as $documentModal): ?>
+        <?php if ($documentModal['available']): $documentType = $documentModal['type']; $documentTitle = $documentModal['title']; $application = $printableApplication; $applicant = $printableApplication['applicant'] ?? []; $dateLabel = static fn (?string $date): string => $date === null || $date === '' ? 'Not recorded' : (new DateTimeImmutable($date, new DateTimeZone('UTC')))->setTimezone(new DateTimeZone('Asia/Manila'))->format('F j, Y'); ?>
+            <div class="modal fade document-preview-modal" id="<?= e($documentModal['id']) ?>" tabindex="-1" aria-labelledby="<?= e($documentModal['id']) ?>Title" aria-hidden="true">
+                <div class="modal-dialog modal-dialog-centered modal-lg modal-dialog-scrollable"><div class="modal-content">
+                    <div class="modal-header"><div><p class="eyebrow">Student portal · Generated document</p><h2 class="modal-title" id="<?= e($documentModal['id']) ?>Title"><?= e($documentTitle) ?></h2></div><button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close <?= e(strtolower($documentTitle)) ?> preview"></button></div>
+                    <div class="modal-body"><?php require __DIR__ . '/print-document-content.php'; ?></div>
+                    <div class="modal-footer"><a class="btn btn-outline-navy" href="<?= e($documentModal['printUrl']) ?>" target="_blank" rel="noopener"><i class="bi bi-box-arrow-up-right" aria-hidden="true"></i> Open print view</a><button type="button" class="btn btn-navy" data-bs-dismiss="modal">Close</button></div>
+                </div></div>
+            </div>
+        <?php endif; ?>
+    <?php endforeach; ?>
+<?php endif; ?>
