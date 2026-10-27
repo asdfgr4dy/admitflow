@@ -1,0 +1,1 @@
+<section class="error-page container-xl"><p class="eyebrow">Staff workspace</p><h1><?= e($title ?? 'Not ready') ?></h1><p><?= e($message ?? 'This section is not available yet.') ?></p><a class="btn btn-outline-navy" href="/">Return to admissions</a></section>

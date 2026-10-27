@@ -1,0 +1,1 @@
+<section class="error-page container-xl"><p class="eyebrow">404 · Not found</p><h1>That page isn't here.</h1><p>Return to the Admission Office homepage to continue.</p><a class="btn btn-amber" href="/">Go to homepage</a></section>

@@ -1,0 +1,1 @@
+<section class="error-page container-xl"><p class="eyebrow">Temporary issue</p><h1>We couldn't load this page.</h1><p>Your information has not been displayed. Please try again in a moment.</p><a class="btn btn-outline-navy" href="/">Return to admissions</a></section>

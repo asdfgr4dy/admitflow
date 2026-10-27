@@ -1,0 +1,1114 @@
+(() => {
+    document.querySelectorAll('[data-print]').forEach(button => button.addEventListener('click', () => window.print()));
+
+    document.querySelectorAll('[data-toast]').forEach(toastElement => {
+        if (window.bootstrap?.Toast) {
+            window.bootstrap.Toast.getOrCreateInstance(toastElement).show();
+        }
+    });
+
+    const showToast = (type, message) => {
+        const toastTypes = {
+            success: ['Success', 'bi-check-circle-fill'],
+            warning: ['Warning', 'bi-exclamation-triangle-fill'],
+            danger: ['Error', 'bi-x-octagon-fill'],
+            info: ['Information', 'bi-info-circle-fill'],
+        };
+        const [label, icon] = toastTypes[type] || toastTypes.info;
+        let container = document.querySelector('[data-toast-container]');
+        if (!container) {
+            container = document.createElement('div');
+            container.className = 'toast-container position-fixed top-0 end-0 p-3 admitflow-toast-container';
+            container.dataset.toastContainer = '';
+            container.setAttribute('aria-live', type === 'danger' ? 'assertive' : 'polite');
+            container.setAttribute('aria-atomic', 'true');
+            document.body.append(container);
+        }
+        const toast = document.createElement('div');
+        toast.className = `toast admitflow-toast toast-${type}`;
+        toast.setAttribute('role', type === 'danger' ? 'alert' : 'status');
+        toast.dataset.toast = '';
+        toast.dataset.bsAutohide = type === 'danger' ? 'false' : 'true';
+        toast.dataset.bsDelay = type === 'danger' || type === 'warning' ? '12000' : '5500';
+        const header = document.createElement('div');
+        header.className = 'toast-header';
+        const iconElement = document.createElement('i');
+        iconElement.className = `bi ${icon} toast-type-icon`;
+        iconElement.setAttribute('aria-hidden', 'true');
+        const title = document.createElement('strong');
+        title.className = 'me-auto';
+        title.textContent = label;
+        const close = document.createElement('button');
+        close.type = 'button';
+        close.className = 'btn-close';
+        close.dataset.bsDismiss = 'toast';
+        close.setAttribute('aria-label', 'Dismiss notification');
+        header.append(iconElement, title, close);
+        const body = document.createElement('div');
+        body.className = 'toast-body';
+        body.textContent = message;
+        toast.append(header, body);
+        container.append(toast);
+        if (window.bootstrap?.Toast) window.bootstrap.Toast.getOrCreateInstance(toast).show();
+    };
+
+    document.querySelectorAll('form[data-auto-filter-form]').forEach(form => {
+        let searchTimer = null;
+        let isSubmitting = false;
+        const panel = form.querySelector('[data-advanced-panel]');
+        const advancedToggle = form.querySelector('[data-advanced-toggle]');
+        const advancedClose = form.querySelector('[data-advanced-close]');
+        const datePreset = form.querySelector('[data-date-preset]');
+        const customRange = form.querySelector('[data-custom-range]');
+        const rangeStart = form.querySelector('[data-range-start]');
+        const rangeEnd = form.querySelector('[data-range-end]');
+        const canonicalQuery = params => [...params.entries()].sort(([aKey, aValue], [bKey, bValue]) => aKey.localeCompare(bKey) || aValue.localeCompare(bValue)).map(([key, value]) => `${encodeURIComponent(key)}=${encodeURIComponent(value)}`).join('&');
+        const cleanParams = params => {
+            [...params.entries()].forEach(([key, value]) => { if (value === '') params.delete(key); });
+            return params;
+        };
+        const manilaToday = () => {
+            const parts = new Intl.DateTimeFormat('en-US', { timeZone: 'Asia/Manila', year: 'numeric', month: '2-digit', day: '2-digit' }).formatToParts(new Date());
+            const values = Object.fromEntries(parts.map(part => [part.type, part.value]));
+            return new Date(Date.UTC(Number(values.year), Number(values.month) - 1, Number(values.day)));
+        };
+        const dateValue = date => `${date.getUTCFullYear()}-${String(date.getUTCMonth() + 1).padStart(2, '0')}-${String(date.getUTCDate()).padStart(2, '0')}`;
+        const updateDatePreset = clearDates => {
+            if (!datePreset) return;
+            const preset = datePreset.value;
+            const custom = preset === 'custom';
+            if (customRange) customRange.hidden = !custom;
+            if (rangeStart) rangeStart.required = custom;
+            if (rangeEnd) rangeEnd.required = custom;
+            if (preset === 'last7' || preset === 'last30') {
+                const end = manilaToday();
+                const start = new Date(end);
+                start.setUTCDate(start.getUTCDate() - (preset === 'last7' ? 6 : 29));
+                if (rangeStart) rangeStart.value = dateValue(start);
+                if (rangeEnd) rangeEnd.value = dateValue(end);
+            } else if (clearDates && !custom) {
+                if (rangeStart) rangeStart.value = '';
+                if (rangeEnd) rangeEnd.value = '';
+            }
+        };
+        const submitFilters = () => {
+            if (isSubmitting) return;
+            const formData = new FormData(form);
+            const controlledKeys = new Set([...formData.keys()]);
+            const params = cleanParams(new URLSearchParams(formData));
+            const pageKeys = ['page', ...(form.dataset.pageParams || '').split(',').filter(Boolean)];
+            pageKeys.forEach(key => params.delete(key));
+            const current = cleanParams(new URLSearchParams(window.location.search));
+            pageKeys.forEach(key => current.delete(key));
+            [...current.entries()].forEach(([key, value]) => {
+                if (!controlledKeys.has(key)) params.append(key, value);
+            });
+            if (canonicalQuery(params) === canonicalQuery(current)) return;
+            const start = rangeStart;
+            const end = rangeEnd;
+            if (start && end && start.value && end.value) {
+                end.setCustomValidity(start.value > end.value ? 'The end date must be on or after the start date.' : '');
+            }
+            if ((datePreset?.value === 'custom' || (start && end)) && !form.reportValidity()) return;
+            isSubmitting = true;
+            form.setAttribute('aria-busy', 'true');
+            form.classList.add('is-loading');
+            form.querySelector('[data-filter-status]')?.replaceChildren(document.createTextNode('Updating results…'));
+            const fragment = form.dataset.filterTarget ? `#${encodeURIComponent(form.dataset.filterTarget)}` : '';
+            const actionUrl = form.getAttribute('action') || window.location.pathname;
+            window.location.assign(`${actionUrl}?${params.toString()}${fragment}`);
+        };
+        const setExpanded = expanded => {
+            if (!panel || !advancedToggle) return;
+            panel.hidden = !expanded;
+            advancedToggle.setAttribute('aria-expanded', String(expanded));
+            if (!expanded) advancedToggle.focus();
+        };
+        advancedToggle?.addEventListener('click', () => setExpanded(panel?.hidden ?? true));
+        advancedClose?.addEventListener('click', () => setExpanded(false));
+        panel?.addEventListener('keydown', event => {
+            if (event.key === 'Escape') {
+                event.preventDefault();
+                setExpanded(false);
+            }
+        });
+        let refreshStaleDatePreset = false;
+        if (datePreset) {
+            if ((rangeStart?.value || rangeEnd?.value) && !datePreset.value) datePreset.value = 'custom';
+            const previousStart = rangeStart?.value || '';
+            const previousEnd = rangeEnd?.value || '';
+            updateDatePreset(false);
+            refreshStaleDatePreset = ['last7', 'last30'].includes(datePreset.value)
+                && (previousStart !== rangeStart?.value || previousEnd !== rangeEnd?.value);
+            datePreset.addEventListener('change', () => {
+                updateDatePreset(true);
+                submitFilters();
+            });
+        }
+        form.querySelectorAll('[data-filter-change], [data-range-start], [data-range-end]').forEach(control => control.addEventListener('change', submitFilters));
+        form.querySelectorAll('[data-filter-search]').forEach(input => {
+            input.addEventListener('input', () => {
+                window.clearTimeout(searchTimer);
+                searchTimer = window.setTimeout(submitFilters, 350);
+            });
+            input.addEventListener('keydown', event => {
+                if (event.key === 'Enter') {
+                    event.preventDefault();
+                    window.clearTimeout(searchTimer);
+                    submitFilters();
+                }
+            });
+        });
+        form.addEventListener('submit', event => {
+            event.preventDefault();
+            window.clearTimeout(searchTimer);
+            submitFilters();
+        });
+        form.querySelectorAll('[data-clear-filter]').forEach(button => button.addEventListener('click', () => {
+            const names = (button.dataset.clearKeys || button.dataset.clearFilter).split(',');
+            names.forEach(name => {
+                const control = form.querySelector(`[name="${CSS.escape(name)}"]`);
+                if (control) control.value = '';
+            });
+            if (datePreset && names.some(name => name === datePreset.name)) updateDatePreset(false);
+            submitFilters();
+        }));
+        form.querySelectorAll('[data-reset-filter-form], a.btn-link, a.application-clear-all').forEach(button => button.addEventListener('click', event => {
+            event.preventDefault();
+            form.querySelectorAll('[name]').forEach(control => {
+                if (control.name !== 'per_page') control.value = '';
+            });
+            if (datePreset) updateDatePreset(true);
+            submitFilters();
+        }));
+        if (refreshStaleDatePreset) submitFilters();
+    });
+
+    const announcementModal = document.querySelector('[data-announcement-modal]');
+    if (announcementModal && window.bootstrap?.Modal) {
+        const scheduleFields = announcementModal.querySelector('[data-schedule-fields]');
+        const scheduleDate = announcementModal.querySelector('[data-schedule-date]');
+        const submitLabel = announcementModal.querySelector('[data-announcement-submit-label]');
+        const submitButton = announcementModal.querySelector('[data-announcement-submit]');
+        const updateAnnouncementMode = () => {
+            const scheduled = announcementModal.querySelector('[data-announcement-mode]:checked')?.value === 'schedule';
+            if (scheduleFields) scheduleFields.hidden = !scheduled;
+            if (scheduleDate) scheduleDate.required = scheduled;
+            if (submitLabel && submitButton) submitLabel.textContent = scheduled ? submitButton.dataset.scheduleLabel : submitButton.dataset.publishLabel;
+        };
+        announcementModal.querySelectorAll('[data-announcement-mode]').forEach(input => input.addEventListener('change', updateAnnouncementMode));
+        updateAnnouncementMode();
+        announcementModal.addEventListener('shown.bs.modal', () => {
+            (announcementModal.querySelector('.is-invalid') || announcementModal.querySelector('#new_announcement_title'))?.focus();
+        });
+        if (announcementModal.dataset.open === 'true') window.bootstrap.Modal.getOrCreateInstance(announcementModal).show();
+    }
+
+    document.querySelectorAll('[data-page-size-select]').forEach(select => select.addEventListener('change', () => {
+        const url = new URL(window.location.href);
+        url.searchParams.set(select.dataset.pageSizeSelect, select.value);
+        url.searchParams.delete(select.dataset.pageParam || 'page');
+        window.location.assign(url.toString());
+    }));
+
+    document.querySelectorAll('form[data-submit-once]').forEach(form => form.addEventListener('submit', event => {
+        const submitButton = event.submitter instanceof HTMLElement && event.submitter.matches('button[type="submit"], input[type="submit"]')
+            ? event.submitter
+            : form.querySelector('button[type="submit"]:not(:disabled), input[type="submit"]:not(:disabled)');
+        if (!submitButton) return;
+        submitButton.disabled = true;
+        submitButton.setAttribute('aria-busy', 'true');
+        const loadingLabel = submitButton.dataset.loadingLabel;
+        if (loadingLabel) submitButton.textContent = loadingLabel;
+    }));
+
+    const avatarMenu = document.querySelector('[data-avatar-menu]');
+    const avatarToggle = avatarMenu?.querySelector('[data-avatar-menu-toggle]');
+    const avatarPopover = avatarMenu?.querySelector('[role="menu"]');
+    const avatarInput = document.querySelector('[data-avatar-input]');
+    const avatarPreview = document.querySelector('[data-avatar-preview]');
+    const avatarFallback = document.querySelector('[data-avatar-fallback]');
+    const avatarFeedback = document.querySelector('[data-avatar-feedback]');
+    const previewOption = avatarMenu?.querySelector('[data-avatar-preview-open]');
+    const avatarSaveButton = document.querySelector('[data-avatar-save]');
+    const avatarPreviewDialog = document.querySelector('[data-avatar-preview-dialog]');
+    const dialogImage = avatarPreviewDialog?.querySelector('[data-avatar-dialog-image]');
+    let previewUrl = null;
+    if (avatarMenu && avatarToggle && avatarPopover) {
+        const menuItems = () => [...avatarPopover.querySelectorAll('[role="menuitem"]')].filter(item => !item.hidden && !item.disabled);
+        const closeAvatarMenu = (restoreFocus = false) => {
+            avatarPopover.hidden = true;
+            avatarToggle.setAttribute('aria-expanded', 'false');
+            if (restoreFocus) avatarToggle.focus();
+        };
+        const openAvatarMenu = () => {
+            avatarPopover.hidden = false;
+            avatarToggle.setAttribute('aria-expanded', 'true');
+            menuItems()[0]?.focus();
+        };
+        avatarToggle.addEventListener('click', () => {
+            if (avatarPopover.hidden) openAvatarMenu();
+            else closeAvatarMenu();
+        });
+        avatarPopover.addEventListener('click', event => {
+            const confirmButton = event.target.closest('[data-confirm]');
+            if (confirmButton) {
+                event.preventDefault();
+                closeAvatarMenu();
+                if (!confirm(confirmButton.dataset.confirm || 'Remove this profile picture?')) return;
+                const form = confirmButton.getAttribute('form') ? document.getElementById(confirmButton.getAttribute('form')) : null;
+                if (form) form.requestSubmit();
+                return;
+            }
+            if (event.target.closest('[data-avatar-upload]')) {
+                closeAvatarMenu();
+                avatarInput?.click();
+            } else if (event.target.closest('[data-avatar-preview-open]')) {
+                closeAvatarMenu();
+                if (previewUrl && avatarPreviewDialog?.showModal) avatarPreviewDialog.showModal();
+            }
+        });
+        avatarPopover.addEventListener('keydown', event => {
+            const items = menuItems();
+            const currentIndex = items.indexOf(document.activeElement);
+            let nextIndex = null;
+            if (event.key === 'ArrowDown') nextIndex = (currentIndex + 1) % items.length;
+            if (event.key === 'ArrowUp') nextIndex = (currentIndex - 1 + items.length) % items.length;
+            if (event.key === 'Home') nextIndex = 0;
+            if (event.key === 'End') nextIndex = items.length - 1;
+            if (nextIndex !== null && items.length > 0) {
+                event.preventDefault();
+                items[nextIndex].focus();
+            } else if (event.key === 'Escape') {
+                event.preventDefault();
+                closeAvatarMenu(true);
+            } else if (event.key === 'Tab') {
+                closeAvatarMenu();
+            }
+        });
+        document.addEventListener('click', event => {
+            if (!avatarMenu.contains(event.target) && !avatarPopover.hidden) closeAvatarMenu();
+        });
+        document.addEventListener('keydown', event => {
+            if (event.key === 'Escape' && !avatarPopover.hidden) closeAvatarMenu(true);
+        });
+    }
+
+    let savedAvatarSource = '';
+    if (avatarInput && avatarPreview && avatarFallback) {
+        savedAvatarSource = avatarPreview.getAttribute('src') || '';
+        const restoreSavedAvatar = () => {
+            if (previewUrl) URL.revokeObjectURL(previewUrl);
+            previewUrl = null;
+            if (savedAvatarSource) avatarPreview.src = savedAvatarSource;
+            else avatarPreview.removeAttribute('src');
+            avatarPreview.hidden = savedAvatarSource === '';
+            avatarFallback.hidden = savedAvatarSource !== '';
+            if (dialogImage) dialogImage.removeAttribute('src');
+            if (previewOption) previewOption.hidden = true;
+            if (avatarSaveButton) avatarSaveButton.hidden = true;
+            avatarToggle?.setAttribute('aria-label', 'Edit profile picture');
+        };
+        const discardAvatarPreview = () => {
+            avatarInput.value = '';
+            restoreSavedAvatar();
+            avatarFeedback.textContent = 'Photo selection cancelled. Your saved profile picture is unchanged.';
+            if (avatarPreviewDialog?.open) avatarPreviewDialog.close();
+        };
+        document.addEventListener('profile:cancel-edit', () => {
+            if (previewUrl) discardAvatarPreview();
+        });
+        avatarInput.addEventListener('change', () => {
+            const file = avatarInput.files?.[0];
+            avatarInput.setCustomValidity('');
+            if (!file) {
+                restoreSavedAvatar();
+                avatarFeedback.textContent = 'JPEG or PNG, maximum 2 MB.';
+                return;
+            }
+            if (!['image/jpeg', 'image/png'].includes(file.type) || file.size > 2 * 1024 * 1024) {
+                avatarInput.setCustomValidity('Choose a JPEG or PNG image no larger than 2 MB.');
+                avatarFeedback.textContent = 'Choose a JPEG or PNG image no larger than 2 MB.';
+                avatarInput.reportValidity();
+                avatarInput.value = '';
+                restoreSavedAvatar();
+                return;
+            }
+            if (previewUrl) URL.revokeObjectURL(previewUrl);
+            previewUrl = URL.createObjectURL(file);
+            avatarPreview.src = previewUrl;
+            if (dialogImage) dialogImage.src = previewUrl;
+            avatarPreview.hidden = false;
+            avatarFallback.hidden = true;
+            if (previewOption) previewOption.hidden = false;
+            if (avatarSaveButton) avatarSaveButton.hidden = false;
+            avatarFeedback.textContent = `${file.name} selected. Preview only; upload to save.`;
+            avatarMenu?.querySelector('[data-avatar-menu-toggle]')?.setAttribute('aria-label', 'Preview selected profile photo and edit profile picture');
+            if (avatarPopover && !avatarPopover.hidden) {
+                avatarPopover.hidden = true;
+                avatarToggle?.setAttribute('aria-expanded', 'false');
+            }
+            avatarPreview.addEventListener('error', () => {
+                restoreSavedAvatar();
+                avatarFeedback.textContent = 'This image could not be previewed. Choose another image.';
+                avatarInput.value = '';
+                if (avatarPreviewDialog?.open) avatarPreviewDialog.close();
+            }, { once: true });
+        });
+        avatarInput.closest('form')?.addEventListener('submit', event => {
+            if (!avatarInput.files?.length || !avatarInput.checkValidity()) {
+                event.preventDefault();
+                avatarInput.reportValidity();
+                return;
+            }
+            avatarFeedback.textContent = 'Uploading profile photo...';
+        });
+        avatarPreviewDialog?.querySelectorAll('[data-avatar-preview-cancel]').forEach(button => button.addEventListener('click', discardAvatarPreview));
+        avatarPreviewDialog?.addEventListener('cancel', event => {
+            event.preventDefault();
+            discardAvatarPreview();
+        });
+        avatarPreviewDialog?.addEventListener('click', event => {
+            if (event.target === avatarPreviewDialog) avatarPreviewDialog.close();
+        });
+        window.addEventListener('pagehide', () => {
+            if (previewUrl) URL.revokeObjectURL(previewUrl);
+        }, { once: true });
+    }
+
+    const profileCard = document.querySelector('[data-profile-card]');
+    if (profileCard) {
+        const profileEditToggle = profileCard.querySelector('[data-profile-edit-toggle]');
+        const profileView = profileCard.querySelector('[data-profile-view]');
+        const profileEdit = profileCard.querySelector('[data-profile-edit]');
+        const profileCancel = profileCard.querySelector('[data-profile-cancel]');
+        const profileInputs = profileEdit ? [...profileEdit.querySelectorAll('input, select')] : [];
+        let profileInitialValues = {};
+
+        const captureProfileValues = () => {
+            profileInitialValues = {};
+            profileInputs.forEach(input => {
+                if (input.name) profileInitialValues[input.name] = input.dataset.profileSavedValue ?? input.value;
+            });
+        };
+        const clearProfileFieldErrors = () => {
+            profileEdit.querySelectorAll('.settings-field-error').forEach(error => error.remove());
+            profileEdit.querySelectorAll('[aria-invalid="true"]').forEach(input => {
+                input.removeAttribute('aria-invalid');
+                input.classList.remove('is-invalid');
+            });
+        };
+        const restoreProfileValues = () => {
+            profileInputs.forEach(input => {
+                if (input.name in profileInitialValues) input.value = profileInitialValues[input.name];
+            });
+        };
+        const clearLocalAvatarSelection = () => {
+            if (!avatarInput) return;
+            avatarInput.value = '';
+            if (previewUrl) { URL.revokeObjectURL(previewUrl); previewUrl = null; }
+            if (avatarPreview) {
+                if (savedAvatarSource) { avatarPreview.src = savedAvatarSource; avatarPreview.hidden = false; }
+                else { avatarPreview.removeAttribute('src'); avatarPreview.hidden = true; }
+            }
+            if (avatarFallback) avatarFallback.hidden = savedAvatarSource !== '';
+            if (dialogImage) dialogImage.removeAttribute('src');
+            if (previewOption) previewOption.hidden = true;
+            if (avatarSaveButton) avatarSaveButton.hidden = true;
+            if (avatarFeedback) avatarFeedback.textContent = '';
+        };
+        const openProfileEdit = () => {
+            if (profileView) profileView.hidden = true;
+            if (profileEdit) profileEdit.hidden = false;
+            if (profileEditToggle) {
+                profileEditToggle.hidden = true;
+                profileEditToggle.setAttribute('aria-expanded', 'true');
+            }
+            profileEdit?.querySelector('input:not([readonly]), select, textarea')?.focus();
+        };
+        const closeProfileEdit = () => {
+            restoreProfileValues();
+            clearProfileFieldErrors();
+            clearLocalAvatarSelection();
+            if (profileView) profileView.hidden = false;
+            if (profileEdit) profileEdit.hidden = true;
+            if (profileEditToggle) {
+                profileEditToggle.hidden = false;
+                profileEditToggle.setAttribute('aria-expanded', 'false');
+                profileEditToggle.focus();
+            }
+        };
+        captureProfileValues();
+        profileEditToggle.addEventListener('click', openProfileEdit);
+        profileCancel.addEventListener('click', closeProfileEdit);
+    }
+
+    const notificationMenu = document.querySelector('[data-notification-menu]');
+    if (notificationMenu) {
+        const notificationToggle = notificationMenu.querySelector('[data-notification-toggle]');
+        const notificationPanel = notificationMenu.querySelector('[data-notification-panel]');
+        const closeNotifications = () => {
+            notificationPanel.hidden = true;
+            notificationToggle.setAttribute('aria-expanded', 'false');
+        };
+        const postNotificationAction = async (path, values = {}) => {
+            const body = new URLSearchParams({ _csrf: notificationMenu.dataset.csrf, ...values });
+            try {
+                const response = await fetch(path, { method: 'POST', credentials: 'same-origin', headers: { 'Accept': 'application/json', 'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8' }, body });
+                const result = await response.json().catch(() => ({ ok: false }));
+                return { ok: response.ok && result.ok === true, message: result.message || 'The notification could not be updated.' };
+            } catch {
+                return { ok: false, message: 'Could not update the notification. Please try again.' };
+            }
+        };
+        notificationToggle.addEventListener('click', () => {
+            const opening = notificationPanel.hidden;
+            notificationPanel.hidden = !opening;
+            notificationToggle.setAttribute('aria-expanded', String(opening));
+            if (opening) notificationPanel.querySelector('a, button')?.focus();
+        });
+        notificationMenu.addEventListener('click', async event => {
+            const notificationLink = event.target.closest('[data-notification-link]');
+            if (notificationLink) {
+                const notificationId = notificationLink.dataset.notificationId;
+                const derivedKey = notificationLink.dataset.derivedKey;
+                if (notificationId || derivedKey) {
+                    event.preventDefault();
+                    try {
+                        await postNotificationAction(notificationId ? '/notifications/read' : '/notifications/dismiss-derived', notificationId ? { notification_id: notificationId } : { key: derivedKey });
+                    } catch {
+                    }
+                    window.location.assign(notificationLink.href);
+                }
+                return;
+            }
+            const markButton = event.target.closest('[data-notification-mark]');
+            if (markButton) {
+                const notificationId = markButton.dataset.notificationId;
+                const derivedKey = markButton.dataset.derivedKey;
+                const result = await postNotificationAction(notificationId ? '/notifications/read' : '/notifications/dismiss-derived', notificationId ? { notification_id: notificationId } : { key: derivedKey });
+                showToast(result.ok ? 'success' : 'danger', result.message);
+                if (result.ok) window.setTimeout(() => window.location.reload(), 4500);
+                return;
+            }
+            if (event.target.closest('[data-notification-mark-all]')) {
+                const result = await postNotificationAction('/notifications/read-all');
+                showToast(result.ok ? 'success' : 'danger', result.message);
+                if (result.ok) window.setTimeout(() => window.location.reload(), 4500);
+            }
+        });
+        document.addEventListener('click', event => {
+            if (!notificationMenu.contains(event.target)) closeNotifications();
+        });
+        document.addEventListener('keydown', event => {
+            if (event.key === 'Escape' && !notificationPanel.hidden) {
+                closeNotifications();
+                notificationToggle.focus();
+            }
+        });
+    }
+
+    const profileMenu = document.querySelector('[data-profile-menu]');
+    if (profileMenu) {
+        const profileToggle = profileMenu.querySelector('[data-profile-toggle]');
+        const profilePanel = profileMenu.querySelector('[data-profile-panel]');
+        const profileItems = () => [...profilePanel.querySelectorAll('a[href], button:not(:disabled)')];
+        const closeProfileMenu = (restoreFocus = false) => {
+            profilePanel.hidden = true;
+            profileToggle.setAttribute('aria-expanded', 'false');
+            if (restoreFocus) profileToggle.focus();
+        };
+        profileToggle.addEventListener('click', () => {
+            const opening = profilePanel.hidden;
+            profilePanel.hidden = !opening;
+            profileToggle.setAttribute('aria-expanded', String(opening));
+            if (opening) profileItems()[0]?.focus();
+        });
+        profilePanel.addEventListener('keydown', event => {
+            const items = profileItems();
+            const currentIndex = items.indexOf(document.activeElement);
+            let nextIndex = currentIndex;
+            if (event.key === 'ArrowDown') nextIndex = (currentIndex + 1) % items.length;
+            else if (event.key === 'ArrowUp') nextIndex = (currentIndex - 1 + items.length) % items.length;
+            else if (event.key === 'Home') nextIndex = 0;
+            else if (event.key === 'End') nextIndex = items.length - 1;
+            else return;
+            event.preventDefault();
+            items[nextIndex]?.focus();
+        });
+        profilePanel.querySelectorAll('a').forEach(link => link.addEventListener('click', () => closeProfileMenu()));
+        document.addEventListener('click', event => {
+            if (!profileMenu.contains(event.target)) closeProfileMenu();
+        });
+        document.addEventListener('keydown', event => {
+            if (event.key === 'Escape' && !profilePanel.hidden) closeProfileMenu(true);
+        });
+    }
+
+    const sidebar = document.querySelector('#app-sidebar');
+    const sidebarToggle = document.querySelector('[data-sidebar-toggle]');
+    const sidebarBackdrop = document.querySelector('.app-sidebar-backdrop');
+    if (sidebar && sidebarToggle && sidebarBackdrop) {
+        const mobileSidebar = window.matchMedia('(max-width: 991.98px)');
+        const closeSidebar = () => {
+            sidebar.classList.remove('is-open');
+            sidebarBackdrop.hidden = true;
+            sidebar.inert = mobileSidebar.matches;
+            sidebarToggle.setAttribute('aria-expanded', 'false');
+            sidebarToggle.setAttribute('aria-label', 'Open navigation');
+            document.body.classList.remove('sidebar-open');
+        };
+        const openSidebar = () => {
+            sidebar.classList.add('is-open');
+            sidebarBackdrop.hidden = false;
+            sidebar.inert = false;
+            sidebarToggle.setAttribute('aria-expanded', 'true');
+            sidebarToggle.setAttribute('aria-label', 'Close navigation');
+            document.body.classList.add('sidebar-open');
+        };
+        sidebar.inert = mobileSidebar.matches;
+        mobileSidebar.addEventListener('change', event => {
+            if (!event.matches) {
+                sidebar.inert = false;
+                sidebar.classList.remove('is-open');
+                sidebarBackdrop.hidden = true;
+                document.body.classList.remove('sidebar-open');
+                sidebarToggle.setAttribute('aria-expanded', 'false');
+                sidebarToggle.setAttribute('aria-label', 'Open navigation');
+            } else if (!sidebar.classList.contains('is-open')) {
+                sidebar.inert = true;
+            }
+        });
+        sidebarToggle.addEventListener('click', () => sidebar.classList.contains('is-open') ? closeSidebar() : openSidebar());
+        sidebarBackdrop.addEventListener('click', closeSidebar);
+        sidebar.querySelectorAll('a').forEach(link => link.addEventListener('click', () => {
+            if (window.matchMedia('(max-width: 991.98px)').matches) closeSidebar();
+        }));
+        document.addEventListener('keydown', event => {
+            if (event.key === 'Escape' && sidebar.classList.contains('is-open')) {
+                closeSidebar();
+                sidebarToggle.focus();
+            }
+        });
+
+        const updateAnchorSelection = () => {
+            const applicationsLink = sidebar.querySelector('[data-sidebar-link="Applications"]');
+            sidebar.querySelectorAll('.app-sidebar-link').forEach(link => {
+                link.classList.remove('is-active');
+                link.removeAttribute('aria-current');
+            });
+            const isApplicationsAnchor = window.location.hash === '#applications';
+            if (isApplicationsAnchor && applicationsLink) {
+                applicationsLink.classList.add('is-active');
+                applicationsLink.setAttribute('aria-current', 'location');
+            } else {
+                sidebar.querySelectorAll('[data-sidebar-current="true"]').forEach(link => {
+                    link.classList.add('is-active');
+                    link.setAttribute('aria-current', 'page');
+                });
+            }
+        };
+        updateAnchorSelection();
+        window.addEventListener('hashchange', updateAnchorSelection);
+    }
+
+    const cooldownNotice = document.querySelector('[data-login-cooldown]');
+    if (cooldownNotice) {
+        const countdown = cooldownNotice.querySelector('[data-cooldown-countdown]');
+        const cooldownMessage = cooldownNotice.querySelector('[data-cooldown-message]');
+        const submit = document.querySelector('[data-login-submit]');
+        let secondsRemaining = Math.max(0, Number(cooldownNotice.dataset.loginCooldown) || 0);
+        const updateCountdown = () => {
+            const minutes = Math.floor(secondsRemaining / 60);
+            const seconds = secondsRemaining % 60;
+            const minuteLabel = `${minutes} minute${minutes === 1 ? '' : 's'}`;
+            const secondLabel = `${seconds} second${seconds === 1 ? '' : 's'}`;
+            if (countdown) {
+                countdown.textContent = `Time remaining: ${minutes}:${String(seconds).padStart(2, '0')}`;
+            }
+            if (cooldownMessage) {
+                cooldownMessage.textContent = `Too many failed login attempts. Please try again in ${minuteLabel} and ${secondLabel}.`;
+            }
+            if (secondsRemaining <= 0) {
+                if (submit) submit.disabled = false;
+                return;
+            }
+            if (submit) submit.disabled = true;
+            window.setTimeout(() => {
+                secondsRemaining -= 1;
+                updateCountdown();
+            }, 1000);
+        };
+        updateCountdown();
+    }
+
+    document.querySelectorAll('[data-confirm]').forEach(button => button.addEventListener('click', event => {
+        if (!window.confirm(button.dataset.confirm)) event.preventDefault();
+    }));
+
+    const chartRoot = document.querySelector('[data-chart-data]');
+    let chartData = null;
+    try {
+        chartData = chartRoot ? JSON.parse(chartRoot.dataset.chartData) : null;
+    } catch {
+        chartData = null;
+    }
+    if (chartData && window.Chart) {
+        const palette = ['#16334A', '#E8A83E', '#6FA58D', '#D87966', '#6F95BD', '#827E73', '#A9C5D8', '#D3B56E'];
+        const baseOptions = { responsive: true, maintainAspectRatio: false, plugins: { legend: { labels: { color: '#263746', usePointStyle: true, boxWidth: 8 } } }, scales: { x: { ticks: { color: '#596873' }, grid: { color: '#E8E4DB' } }, y: { beginAtZero: true, ticks: { precision: 0, color: '#596873' }, grid: { color: '#E8E4DB' } } } };
+        document.querySelectorAll('canvas[data-chart]').forEach(canvas => {
+            const kind = canvas.dataset.chart;
+            let labels = [];
+            let values = [];
+            let type = 'bar';
+            let options = baseOptions;
+            let datasets = null;
+            let hasData = false;
+            if (kind === 'monthly') {
+                labels = chartData.monthly.map(row => row.month_key);
+                values = chartData.monthly.map(row => Number(row.total));
+                hasData = values.some(value => value > 0);
+            } else if (kind === 'statuses') {
+                labels = chartData.statuses.map(row => row.status.replaceAll('_', ' '));
+                values = chartData.statuses.map(row => Number(row.total));
+                type = 'doughnut';
+                hasData = values.some(value => value > 0);
+                options = { responsive: true, maintainAspectRatio: false, plugins: { legend: { position: 'bottom', labels: { color: '#263746', usePointStyle: true, boxWidth: 8 } } } };
+            } else if (kind === 'programs') {
+                labels = chartData.programs.map(row => row.label);
+                values = chartData.programs.map(row => Number(row.total));
+                hasData = values.some(value => value > 0);
+                options = { ...baseOptions, indexAxis: 'y' };
+            } else if (kind === 'submitted-reviewed') {
+                labels = chartData.submitted_reviewed.map(row => row.month_key);
+                const submitted = chartData.submitted_reviewed.map(row => Number(row.submitted));
+                const reviewed = chartData.submitted_reviewed.map(row => Number(row.reviewed));
+                hasData = submitted.some(value => value > 0) || reviewed.some(value => value > 0);
+                datasets = [
+                    { label: 'Submitted', data: submitted, backgroundColor: '#E8A83E', borderRadius: 2 },
+                    { label: 'First reviewed', data: reviewed, backgroundColor: '#084884', borderRadius: 2 },
+                ];
+            } else if (kind === 'intake-progress') {
+                labels = chartData.intake_progress.stages.map(row => row.label);
+                values = chartData.intake_progress.stages.map(row => Number(row.total));
+                hasData = values.some(value => value > 0);
+                options = { ...baseOptions, indexAxis: 'y', plugins: { ...baseOptions.plugins, legend: { display: false }, tooltip: { callbacks: { label: context => `${context.dataset.label}: ${context.parsed.x} applications` } } }, scales: { ...baseOptions.scales, x: { ...baseOptions.scales.x, ticks: { ...baseOptions.scales.x.ticks, precision: 0 }, title: { display: true, text: 'Applications', color: '#596873' } } } };
+            } else if (kind === 'review-time') {
+                labels = chartData.review_time.map(row => row.month_key);
+                values = chartData.review_time.map(row => row.average_hours === null ? null : Number(row.average_hours));
+                hasData = values.some(value => value !== null && Number.isFinite(value));
+                type = 'line';
+                options = { responsive: true, maintainAspectRatio: false, spanGaps: false, plugins: { legend: { display: false }, tooltip: { callbacks: { label: context => `${Number(context.parsed.y).toFixed(1)} hours` } } }, scales: { x: { ticks: { color: '#596873' }, grid: { color: '#E8E4DB' } }, y: { beginAtZero: true, ticks: { color: '#596873', callback: value => `${value} h` }, title: { display: true, text: 'Hours', color: '#596873' }, grid: { color: '#E8E4DB' } } } };
+                datasets = [{ label: 'Average review time (hours)', data: values, borderColor: '#084884', backgroundColor: 'rgba(8,72,132,.12)', pointBackgroundColor: '#6FA58D', pointRadius: 3, borderWidth: 2, tension: .2, fill: true }];
+            }
+            if (!hasData) {
+                canvas.parentElement.classList.add('chart-empty');
+                const empty = document.createElement('p');
+                empty.className = 'empty-note';
+                empty.textContent = kind === 'intake-progress' && !chartData.intake_progress.intake
+                    ? 'No open intake is configured.'
+                    : kind === 'intake-progress'
+                        ? 'No non-draft applications are recorded for this open intake yet.'
+                    : kind === 'review-time'
+                        ? 'No valid first-review intervals are available in these months.'
+                        : 'Chart data will appear when applications are recorded.';
+                canvas.replaceWith(empty);
+                return;
+            }
+            if (datasets === null) {
+                datasets = [{ label: 'Applications', data: values, backgroundColor: type === 'doughnut' ? palette : palette[0], borderColor: type === 'doughnut' ? '#FFFFFF' : palette[0], borderWidth: 1, borderRadius: type === 'bar' ? 2 : 0 }];
+            }
+            new Chart(canvas, { type, data: { labels, datasets }, options });
+        });
+    }
+
+    const form = document.querySelector('#application-form');
+    if (form) {
+        const steps = [...form.querySelectorAll('[data-step]')];
+        const stepLinks = [...document.querySelectorAll('[data-step-go]')];
+        const wizardStep = form.querySelector('[data-wizard-step]');
+        let activeStep = Number(steps.find(step => !step.hidden)?.dataset.step) || 0;
+        const fieldMessages = {
+            full_name: 'Please enter your full name.',
+            mobile_number: 'Please enter your mobile number.',
+            date_of_birth: 'Please enter your date of birth.',
+            address_line: 'Please enter your house number, street, and barangay.',
+            municipality: 'Please enter your city or municipality.',
+            province: 'Please enter your province.',
+            emergency_contact_name: 'Please enter your emergency contact name.',
+            emergency_contact_number: 'Please enter your emergency contact number.',
+            academic_program_id: 'Please choose an academic program.',
+            academic_year_id: 'Please choose an open intake.',
+            preferred_campus: 'Please enter your preferred campus.',
+            previous_school: 'Please enter your previous school.',
+            senior_high_strand: 'Please enter your Senior High School strand.'
+        };
+        form.querySelectorAll('[data-step-required]').forEach(input => input.setAttribute('aria-required', 'true'));
+
+        const errorFor = key => form.querySelector(`[data-error-for="${CSS.escape(key)}"]`);
+        const setError = (input, message) => {
+            const output = errorFor(input.id || input.name);
+            input.classList.toggle('is-invalid', Boolean(message));
+            if (message) {
+                input.setAttribute('aria-invalid', 'true');
+                if (output) {
+                    output.id = `${input.id || input.name}-error`;
+                    input.setAttribute('aria-describedby', output.id);
+                }
+            } else {
+                input.removeAttribute('aria-invalid');
+                input.removeAttribute('aria-describedby');
+            }
+            if (output) {
+                output.textContent = message || '';
+                output.hidden = !message;
+            }
+        };
+        const clearStepErrors = step => {
+            step.querySelectorAll('.is-invalid').forEach(input => setError(input, ''));
+            step.querySelectorAll('[data-step-error]').forEach(output => {
+                output.textContent = '';
+                output.hidden = true;
+            });
+        };
+
+        const validateStep = index => {
+            const step = steps[index];
+            clearStepErrors(step);
+            const invalid = [];
+            step.querySelectorAll('[data-step-required]').forEach(input => {
+                const value = input.value.trim();
+                let message = '';
+                if (!value) message = fieldMessages[input.id] || 'Please complete this required field.';
+                else if (input.id === 'full_name' && !/^[\p{L}\p{M}][\p{L}\p{M} .'-]*$/u.test(value)) message = 'Enter a valid name using letters, spaces, apostrophes, or hyphens.';
+                else if (input.id === 'mobile_number' && !/^(?:09\d{9}|\+639\d{9})$/.test(value)) message = 'Enter an 11-digit mobile number starting with 09, or use +639 followed by 9 digits.';
+                else if (input.id === 'date_of_birth' && (!Number.isFinite(Date.parse(value)) || new Date(value) >= new Date(new Date().toDateString()))) message = 'Enter a valid date of birth in the past.';
+                else if (input.id === 'emergency_contact_name' && !/^[\p{L}\p{M}][\p{L}\p{M} .'-]*$/u.test(value)) message = 'Enter a valid emergency contact name.';
+                else if (input.id === 'emergency_contact_number' && !/^[+]?[0-9(). -]{7,30}$/.test(value)) message = 'Enter a valid contact number.';
+                if (message) {
+                    setError(input, message);
+                    invalid.push(input);
+                }
+            });
+
+            if (index === 2) {
+                const programId = form.querySelector('#academic_program_id').value;
+                const yearId = form.querySelector('#academic_year_id').value;
+                const requirements = [...step.querySelectorAll('[data-requirement-row]')].filter(row =>
+                    (!row.dataset.programId || row.dataset.programId === '0' || row.dataset.programId === programId)
+                    && (!row.dataset.yearId || row.dataset.yearId === '0' || row.dataset.yearId === yearId)
+                );
+                const stepError = step.querySelector('[data-step-error]');
+                if (requirements.length === 0) {
+                    if (stepError) {
+                        stepError.textContent = 'No required documents are configured for this program and intake. Contact the Admission Office.';
+                        stepError.hidden = false;
+                    }
+                }
+                requirements.forEach(row => {
+                    const input = row.querySelector('input[type="file"]');
+                    const file = input.files[0];
+                    const allowed = input.dataset.allowedExtensions.split(',').map(extension => extension.trim().toLowerCase());
+                    let message = '';
+                    if (file) {
+                        const extension = file.name.split('.').pop().toLowerCase();
+                        if (!allowed.includes(extension)) message = `Choose a ${allowed.join(', ').toUpperCase()} file.`;
+                        else if (file.size < 1 || file.size > Number(input.dataset.maxBytes)) message = 'The selected file is empty or exceeds the size limit shown above.';
+                    } else if (!input.dataset.existingStatus || input.dataset.existingStatus === 'rejected') {
+                        message = `Upload ${row.querySelector('label').textContent.replace('*', '').trim()}.`;
+                    }
+                    if (message) {
+                        setError(input, message);
+                        invalid.push(input);
+                    }
+                });
+            }
+
+            return invalid;
+        };
+
+        const updateSummary = () => {
+            ['full_name', 'mobile_number', 'date_of_birth', 'address_line', 'municipality', 'province', 'emergency_contact_name', 'emergency_contact_number', 'preferred_campus', 'previous_school', 'senior_high_strand'].forEach(id => {
+                const output = form.querySelector(`[data-summary="${id}"]`);
+                const input = form.querySelector(`#${id}`);
+                if (output && input) output.textContent = input.value.trim() || 'Not entered';
+            });
+            ['academic_program_id', 'academic_year_id'].forEach(id => {
+                const input = form.querySelector(`#${id}`);
+                const output = form.querySelector(`[data-summary="${id}"]`);
+                if (output) output.textContent = input.selectedOptions[0]?.value ? input.selectedOptions[0].textContent : 'Not selected';
+            });
+            form.querySelectorAll('[data-summary-document]').forEach(row => {
+                const input = form.querySelector(`#document_${row.dataset.summaryDocument}`);
+                const output = row.querySelector('[data-document-summary]');
+                if (input.files[0]) output.textContent = `${input.files[0].name} · selected, awaiting server validation`;
+                else if (input.dataset.existingStatus) output.textContent = input.dataset.existingStatus === 'verified' ? 'Verified by staff' : `Uploaded · ${input.dataset.existingStatus.replaceAll('_', ' ')} (not yet verified)`;
+                else output.textContent = 'Missing';
+            });
+            const selectedProgramId = form.querySelector('#academic_program_id').value;
+            const selectedYearId = form.querySelector('#academic_year_id').value;
+            form.querySelectorAll('[data-requirement-row], [data-summary-document]').forEach(row => {
+                const matchesProgram = !row.dataset.programId || row.dataset.programId === '0' || row.dataset.programId === selectedProgramId;
+                const matchesYear = !row.dataset.yearId || row.dataset.yearId === '0' || row.dataset.yearId === selectedYearId;
+                row.hidden = !matchesProgram || !matchesYear;
+            });
+        };
+
+        const showStep = (index, moveFocus = true) => {
+            activeStep = Math.max(0, Math.min(index, steps.length - 1));
+            steps.forEach((step, stepIndex) => {
+                step.hidden = stepIndex !== activeStep;
+                step.classList.toggle('is-visible', stepIndex === activeStep);
+            });
+            stepLinks.forEach((link, linkIndex) => {
+                link.classList.toggle('is-active', linkIndex === activeStep);
+                link.classList.toggle('is-complete', linkIndex < activeStep);
+                if (linkIndex === activeStep) link.setAttribute('aria-current', 'step');
+                else link.removeAttribute('aria-current');
+            });
+            if (activeStep === steps.length - 1) updateSummary();
+            if (moveFocus) steps[activeStep].querySelector('h2')?.focus({ preventScroll: true });
+            steps[activeStep].scrollIntoView({ behavior: 'smooth', block: 'start' });
+        };
+
+        form.addEventListener('click', event => {
+            if (event.target.closest('[data-step-back]')) showStep(activeStep - 1);
+        });
+        stepLinks.forEach(link => link.addEventListener('click', () => {
+            const target = Number(link.dataset.stepGo);
+            if (target <= activeStep) {
+                showStep(target);
+                return;
+            }
+            const invalid = validateStep(activeStep);
+            if (invalid.length) {
+                invalid[0].focus();
+                return;
+            }
+            const nextButton = steps[activeStep].querySelector('[data-step-next]');
+            if (nextButton) {
+                wizardStep.value = String(activeStep);
+                form.requestSubmit(nextButton);
+            }
+        }));
+        form.addEventListener('submit', event => {
+            const action = event.submitter?.value;
+            if (action === 'step') {
+                const sourceStep = Number(event.submitter.dataset.nextStep);
+                for (let index = 0; index <= sourceStep; index += 1) {
+                    const invalid = validateStep(index);
+                    if (invalid.length) {
+                        event.preventDefault();
+                        showStep(index);
+                        invalid[0].focus();
+                        return;
+                    }
+                }
+                wizardStep.value = String(sourceStep);
+            } else if (action === 'submit') {
+                for (let index = 0; index <= 2; index += 1) {
+                    const invalid = validateStep(index);
+                    if (invalid.length) {
+                        event.preventDefault();
+                        showStep(index);
+                        invalid[0].focus();
+                        return;
+                    }
+                }
+                const consent = form.querySelector('[name="privacy_consent"]');
+                if (!consent.checked) {
+                    event.preventDefault();
+                    const output = errorFor('privacy_consent');
+                    output.textContent = 'Please confirm the privacy notice before submitting.';
+                    output.hidden = false;
+                    showStep(3);
+                    consent.focus();
+                    return;
+                }
+                wizardStep.value = '3';
+            }
+        });
+        form.addEventListener('change', updateSummary);
+        form.addEventListener('input', updateSummary);
+        showStep(activeStep, false);
+        updateSummary();
+        const serverError = form.querySelector('.field-error:not([hidden])');
+        if (serverError) {
+            const fieldId = serverError.dataset.errorFor;
+            const invalidField = fieldId ? form.querySelector(`#${CSS.escape(fieldId)}`) : null;
+            if (invalidField) {
+                invalidField.classList.add('is-invalid');
+                invalidField.setAttribute('aria-invalid', 'true');
+                invalidField.setAttribute('aria-describedby', serverError.id || `${fieldId}-error`);
+                serverError.id = serverError.id || `${fieldId}-error`;
+                invalidField.focus();
+            }
+        }
+    }
+
+    const previewDialog = document.querySelector('[data-document-preview]');
+    if (previewDialog) {
+        const previewTitle = previewDialog.querySelector('[data-preview-title]');
+        const previewContent = previewDialog.querySelector('[data-preview-content]');
+        const closePreview = previewDialog.querySelector('[data-preview-close]');
+        let activePreviewUrl = null;
+
+        const clearPreview = () => {
+            if (activePreviewUrl) URL.revokeObjectURL(activePreviewUrl);
+            activePreviewUrl = null;
+            previewContent.replaceChildren();
+        };
+        const showPreviewMessage = message => {
+            clearPreview();
+            const paragraph = document.createElement('p');
+            paragraph.className = 'document-preview-message';
+            paragraph.textContent = message;
+            previewContent.append(paragraph);
+        };
+        const previewDocument = async button => {
+            previewTitle.textContent = button.dataset.documentName || 'Document preview';
+            previewDialog.showModal();
+            showPreviewMessage('Loading secure preview…');
+            const previewUrl = button.dataset.previewUrl;
+            const downloadUrl = button.dataset.downloadUrl;
+            const extension = previewTitle.textContent.split('.').pop().toLowerCase();
+            if (!['pdf', 'jpg', 'jpeg', 'png'].includes(extension)) {
+                clearPreview();
+                const message = document.createElement('p');
+                message.className = 'document-preview-message';
+                message.textContent = 'This file format cannot be previewed here. Use the authorized download action to open it.';
+                previewContent.append(message);
+                if (downloadUrl) {
+                    const download = document.createElement('a');
+                    download.className = 'btn btn-outline-navy';
+                    download.href = downloadUrl;
+                    download.innerHTML = '<i class="bi bi-download" aria-hidden="true"></i> Download document';
+                    previewContent.append(download);
+                }
+                return;
+            }
+
+            try {
+                const response = await fetch(previewUrl, { credentials: 'same-origin', cache: 'no-store' });
+                if (!response.ok) {
+                    const detail = (await response.text()).trim();
+                    showPreviewMessage(detail || 'This document is unavailable or cannot be previewed. Use the authorized download action when available.');
+                    if (downloadUrl) {
+                        const download = document.createElement('a');
+                        download.className = 'btn btn-outline-navy';
+                        download.href = downloadUrl;
+                        download.textContent = 'Download document';
+                        previewContent.append(download);
+                    }
+                    return;
+                }
+                const contentType = response.headers.get('Content-Type')?.split(';')[0].trim().toLowerCase();
+                const expectedType = extension === 'pdf' ? 'application/pdf' : extension === 'png' ? 'image/png' : 'image/jpeg';
+                if (contentType !== expectedType) {
+                    showPreviewMessage('The document content does not match its file type, so it cannot be previewed safely.');
+                    return;
+                }
+                const blob = await response.blob();
+                if (!blob.size) {
+                    showPreviewMessage('This document is empty and cannot be previewed.');
+                    return;
+                }
+                activePreviewUrl = URL.createObjectURL(blob);
+                const content = extension === 'pdf' ? document.createElement('iframe') : document.createElement('img');
+                if (extension === 'pdf') {
+                    content.title = `PDF preview: ${previewTitle.textContent}`;
+                    content.src = activePreviewUrl;
+                } else {
+                    content.alt = `Preview of ${previewTitle.textContent}`;
+                    content.src = activePreviewUrl;
+                }
+                content.className = 'document-preview-media';
+                previewContent.replaceChildren(content);
+                if (content.tagName === 'IMG') {
+                    content.addEventListener('error', () => showPreviewMessage('This image is damaged or cannot be displayed. Use the authorized download action when available.'), { once: true });
+                }
+            } catch {
+                showPreviewMessage('The document preview is unavailable right now. Try the authorized download action.');
+            }
+        };
+
+        document.querySelectorAll('[data-quick-view]:not(:disabled)').forEach(button => button.addEventListener('click', () => previewDocument(button)));
+        closePreview.addEventListener('click', () => previewDialog.close());
+        previewDialog.addEventListener('close', clearPreview);
+        previewDialog.addEventListener('click', event => {
+            if (event.target === previewDialog) previewDialog.close();
+        });
+        document.addEventListener('keydown', event => {
+            if (event.key === 'Escape' && previewDialog.open) previewDialog.close();
+        });
+    }
+
+    document.querySelectorAll('[data-password-toggle]').forEach(passwordToggle => {
+        const password = passwordToggle.closest('.input-group')?.querySelector('input[type="password"], input[type="text"]');
+        if (!password) return;
+        passwordToggle.addEventListener('click', () => {
+            const visible = password.type === 'password';
+            password.type = visible ? 'text' : 'password';
+            passwordToggle.setAttribute('aria-label', visible ? 'Hide password' : 'Show password');
+            passwordToggle.setAttribute('aria-pressed', String(visible));
+            passwordToggle.querySelector('i')?.classList.toggle('bi-eye', !visible);
+            passwordToggle.querySelector('i')?.classList.toggle('bi-eye-slash', visible);
+        });
+    });
+
+    const password = document.querySelector('#password');
+    const confirmation = document.querySelector('#password_confirmation');
+    if (password && confirmation) {
+        const checkMatch = () => confirmation.setCustomValidity(password.value === confirmation.value ? '' : 'The password confirmation does not match.');
+        password.addEventListener('input', checkMatch);
+        confirmation.addEventListener('input', checkMatch);
+    }
+
+    const strengthPassword = document.querySelector('[data-password-strength]');
+    const strengthConfirmation = document.querySelector('[data-password-confirmation]');
+    const strengthPanel = document.querySelector('[data-password-strength-panel]');
+    if (strengthPassword && strengthConfirmation && strengthPanel) {
+        const lengthRule = strengthPanel.querySelector('[data-password-rule="length"]');
+        const matchRule = strengthPanel.querySelector('[data-password-rule="match"]');
+        const meter = strengthPanel.querySelector('[data-password-strength-meter]');
+        const status = strengthPanel.querySelector('[data-password-strength-status]');
+        const lengthError = document.querySelector('[data-password-length-error]');
+        const matchError = document.querySelector('[data-password-match-error]');
+        const updateStrength = () => {
+            const byteLength = new TextEncoder().encode(strengthPassword.value).length;
+            const minimumBytes = Number(strengthPassword.dataset.minBytes);
+            const maximumBytes = Number(strengthPassword.dataset.maxBytes);
+            const lengthValid = byteLength >= minimumBytes && byteLength <= maximumBytes;
+            const matchValid = strengthConfirmation.value.length > 0 && strengthPassword.value === strengthConfirmation.value;
+            const lengthMessage = byteLength > maximumBytes
+                ? `Password must be no more than ${maximumBytes} bytes.`
+                : byteLength > 0 && byteLength < minimumBytes
+                    ? `Password must be at least ${minimumBytes} bytes.`
+                    : '';
+            const matchMessage = strengthConfirmation.value && !matchValid ? 'The confirmation does not match.' : '';
+            strengthPassword.setCustomValidity(lengthMessage);
+            strengthConfirmation.setCustomValidity(matchMessage);
+            strengthPassword.setAttribute('aria-invalid', String(Boolean(lengthMessage)));
+            strengthConfirmation.setAttribute('aria-invalid', String(Boolean(matchMessage)));
+            if (lengthError) lengthError.textContent = lengthMessage || `Use ${minimumBytes} to ${maximumBytes} bytes.`;
+            if (matchError) matchError.textContent = matchMessage;
+            lengthRule.classList.toggle('is-met', lengthValid);
+            matchRule.classList.toggle('is-met', matchValid);
+            const score = Number(lengthValid) + Number(matchValid);
+            meter.style.width = `${score * 50}%`;
+            strengthPanel.dataset.state = score === 2 ? 'ready' : strengthPassword.value.length > 0 ? 'incomplete' : 'empty';
+            status.textContent = score === 2
+                ? 'Password meets the listed requirements.'
+                : byteLength > maximumBytes
+                    ? 'Password is too long.'
+                    : byteLength > 0 && byteLength < minimumBytes
+                        ? 'Add more characters to meet the minimum length.'
+                        : strengthConfirmation.value && !matchValid
+                            ? 'The confirmation does not match yet.'
+                            : 'Enter a password to check the requirements.';
+        };
+        strengthPassword.addEventListener('input', updateStrength);
+        strengthConfirmation.addEventListener('input', updateStrength);
+        updateStrength();
+    }
+})();

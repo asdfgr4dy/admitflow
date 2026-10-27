@@ -1,0 +1,41 @@
+/config/database.local.php
+/vendor/
+/storage/logs/*
+!/storage/logs/.gitkeep
+/storage/uploads/*
+!/storage/uploads/.gitkeep
+/storage/backups/*
+!/storage/backups/.gitkeep
+# Environment secrets
+.env
+.env.*
+!.env.example
+
+# Private configuration
+/config/database.local.php
+
+# Logs and generated output
+*.log
+/security-out.txt
+
+# Local test/account artifacts
+/test account
+
+# Database dumps and local database files
+*.sql.gz
+*.dump
+*.sqlite
+*.sqlite3
+*.db
+
+# Private keys and certificates
+*.pem
+*.key
+
+# Local dependencies and generated folders
+/node_modules/
+/.cache/
+
+# User-uploaded avatars and runtime data
+/storage/avatars/*
+!/storage/avatars/.gitkeep
