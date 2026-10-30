@@ -28,6 +28,19 @@ $assert = static function (bool $condition, string $message) use (&$tests, &$fai
     if (!$condition) $failures[] = $message;
 };
 
+$_SERVER['REMOTE_ADDR'] = '192.0.2.10';
+$_SERVER['HTTP_X_FORWARDED_FOR'] = '198.51.100.77';
+$_SERVER['HTTP_FORWARDED'] = 'for=203.0.113.8';
+$assert(request_ip() === '192.0.2.10', 'audit IP uses a validated direct REMOTE_ADDR and ignores untrusted forwarding headers');
+$serverAddress = $_SERVER['REMOTE_ADDR'];
+$_SERVER['REMOTE_ADDR'] = '2001:db8::8';
+$assert(request_ip() === '2001:db8::8', 'audit IP accepts a valid direct IPv6 address');
+$_SERVER['REMOTE_ADDR'] = 'not-an-ip';
+$assert(request_ip() === null, 'invalid direct address yields no audit IP rather than a forwarded value');
+unset($_SERVER['REMOTE_ADDR']);
+$assert(request_ip() === null, 'missing direct address yields a null audit IP rather than a forwarded value');
+$_SERVER['REMOTE_ADDR'] = $serverAddress;
+
 if (!in_array('sqlite', PDO::getAvailableDrivers(), true)) {
     fwrite(STDERR, "SKIP: PDO SQLite is required. No database tests were run.\n");
     exit(2);
@@ -85,6 +98,269 @@ try {
     $invalidBackupDatesRejected = true;
 }
 $assert($filteredBackupPage['pagination']['total'] === 1 && (int) $filteredBackupPage['rows'][0]['id'] === 90 && $filteredBackupPage['rows'][0]['creator_name'] === 'Backup Operator' && $filteredBackupPage['pagination']['query']['backup_type'] === 'files' && $invalidBackupDatesRejected, 'backup filters combine type, status, creator search, Manila date range, pagination metadata, and reversed-range validation');
+$restoreTempRoot = sys_get_temp_dir() . DIRECTORY_SEPARATOR . 'admitflow-restore-' . bin2hex(random_bytes(6));
+mkdir($restoreTempRoot, 0700);
+$diagnosticFixturePath = $restoreTempRoot . DIRECTORY_SEPARATOR . 'backup-diagnostics.jsonl';
+BackupService::logRequestEvent(['request_id' => '0123456789abcdef01234567', 'type' => 'files', 'stage' => 'metadata-insert', 'event' => 'failed', 'elapsed_seconds' => 17, 'exception_class' => 'PDOException', 'output_path' => 'C:\\private\\upload.pdf', 'message' => 'synthetic-secret'], $diagnosticFixturePath);
+$diagnosticFixture = json_decode((string) file_get_contents($diagnosticFixturePath), true);
+$assert(is_array($diagnosticFixture) && $diagnosticFixture['request_id'] === '0123456789abcdef01234567' && $diagnosticFixture['stage'] === 'metadata-insert' && $diagnosticFixture['type'] === 'files' && !isset($diagnosticFixture['output_path']) && !isset($diagnosticFixture['message']), 'backup diagnostic log stores correlation/stage fields only and excludes arbitrary paths and messages');
+$restoreDb = new PDO('sqlite::memory:', null, null, [PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION, PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC]);
+$restoreDb->exec('CREATE TABLE users (id INTEGER PRIMARY KEY, full_name TEXT NOT NULL)');
+$restoreDb->exec('CREATE TABLE backups (id INTEGER PRIMARY KEY AUTOINCREMENT, backup_type TEXT, storage_name TEXT UNIQUE, file_size_bytes INTEGER, sha256 TEXT, verification_status TEXT, created_by INTEGER NULL, created_at TEXT DEFAULT CURRENT_TIMESTAMP, verified_at TEXT NULL, failure_message TEXT NULL)');
+$restoreDb->exec('CREATE TABLE audit_logs (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER NULL, actor_label TEXT, action TEXT, entity_type TEXT, entity_id INTEGER, outcome TEXT, severity TEXT, ip_address TEXT)');
+$restoreDb->exec('CREATE TABLE restore_fixture (id INTEGER PRIMARY KEY, value TEXT NOT NULL)');
+$restoreDb->exec("INSERT INTO users (id, full_name) VALUES (9, 'Isolated Administrator')");
+$restoreDb->exec("INSERT INTO restore_fixture (id, value) VALUES (1, 'before-restore')");
+$restoreActor = ['id' => 9, 'full_name' => 'Isolated Administrator', 'role' => 'admin'];
+$requiredDumpTables = ['users','student_profiles','academic_years','academic_programs','applications','admission_requirements','application_documents','document_reviews','reviewer_assignments','screening_notes','interviews','enrollment_records','announcements','notifications','application_status_history','audit_logs','password_reset_tokens','login_attempts','backups','system_settings'];
+$writeRestoreFixtureDump = static function (string $path, string $marker = 'fixture') use ($requiredDumpTables): void {
+    $dump = "-- MySQL dump 10.13\n";
+    foreach ($requiredDumpTables as $table) $dump .= 'CREATE TABLE `' . $table . "` (id INTEGER);\n";
+    $dump .= '-- isolated marker: ' . $marker . "\n-- Dump completed on 2026-10-29 12:00:00\n";
+    $dump .= '-- padding ' . str_repeat('x', 1200) . "\n";
+    file_put_contents($path, $dump);
+};
+$databaseBackupId = BackupService::createDatabase($restoreDb, $restoreActor, static function (string $target) use ($writeRestoreFixtureDump): int {
+    $writeRestoreFixtureDump($target, 'selected');
+    return 0;
+}, $restoreTempRoot);
+$databaseBackupRow = $restoreDb->query('SELECT storage_name, file_size_bytes, sha256, verification_status FROM backups WHERE id=' . $databaseBackupId)->fetch();
+$databaseBackupFile = $restoreTempRoot . DIRECTORY_SEPARATOR . $databaseBackupRow['storage_name'];
+$assert($databaseBackupRow['verification_status'] === 'verified' && (int) $databaseBackupRow['file_size_bytes'] === filesize($databaseBackupFile) && hash_equals($databaseBackupRow['sha256'], hash_file('sha256', $databaseBackupFile)), 'isolated database backup creation records unique storage, size, SHA-256, and verified structure');
+$backupFileCountBeforeFailures = count(glob($restoreTempRoot . DIRECTORY_SEPARATOR . 'database-*.sql') ?: []);
+$previousErrorLog = ini_get('error_log');
+$diagnosticLogPath = $restoreTempRoot . DIRECTORY_SEPARATOR . 'backup-diagnostics.log';
+ini_set('error_log', $diagnosticLogPath);
+$processFailureMessage = '';
+try {
+    BackupService::createDatabase($restoreDb, $restoreActor, static function (string $target): array {
+        file_put_contents($target, 'partial output');
+        return ['exit_code' => 2, 'stderr' => 'Access denied; password=do-not-log C:\\private\\database\\dump.sql'];
+    }, $restoreTempRoot);
+} catch (RuntimeException $error) {
+    $processFailureMessage = $error->getMessage();
+}
+$loggedDumpDiagnostic = is_file($diagnosticLogPath) ? file_get_contents($diagnosticLogPath) : '';
+$assert(str_contains($processFailureMessage, 'process failed') && is_string($loggedDumpDiagnostic) && str_contains($loggedDumpDiagnostic, 'exit=2') && !str_contains($loggedDumpDiagnostic, 'do-not-log') && !str_contains($loggedDumpDiagnostic, 'C:\\private') && count(glob($restoreTempRoot . DIRECTORY_SEPARATOR . 'database-*.sql') ?: []) === $backupFileCountBeforeFailures, 'nonzero dump exit logs useful redacted diagnostics, returns sanitized error, and removes partial dump');
+ini_set('error_log', $previousErrorLog === false ? '' : (string) $previousErrorLog);
+$emptyOutputRejected = false;
+try {
+    BackupService::createDatabase($restoreDb, $restoreActor, static function (): int { return 0; }, $restoreTempRoot);
+} catch (RuntimeException $error) {
+    $emptyOutputRejected = str_contains($error->getMessage(), 'missing or incomplete');
+}
+$assert($emptyOutputRejected && count(glob($restoreTempRoot . DIRECTORY_SEPARATOR . 'database-*.sql') ?: []) === $backupFileCountBeforeFailures, 'successful dump process with zero-byte output is rejected and cleaned');
+$writeMalformedDump = static function (string $target): int { file_put_contents($target, str_repeat('malformed SQL output ', 100)); return 0; };
+$malformedOutputRejected = false;
+try {
+    BackupService::createDatabase($restoreDb, $restoreActor, $writeMalformedDump, $restoreTempRoot);
+} catch (RuntimeException $error) {
+    $malformedOutputRejected = str_contains($error->getMessage(), 'verification failed');
+}
+$malformedMetadata = $restoreDb->query("SELECT verification_status FROM backups WHERE storage_name LIKE 'database-%' AND verification_status='failed' ORDER BY id DESC LIMIT 1")->fetchColumn();
+$assert($malformedOutputRejected && $malformedMetadata === 'failed', 'large malformed dump is retained only with failed metadata, never as a successful backup');
+$restoreDb->exec("CREATE TRIGGER fail_backup_metadata BEFORE INSERT ON backups WHEN NEW.storage_name LIKE 'database-%' BEGIN SELECT RAISE(ABORT, 'synthetic metadata failure'); END");
+$backupFileCountBeforeMetadataFailure = count(glob($restoreTempRoot . DIRECTORY_SEPARATOR . 'database-*.sql') ?: []);
+$metadataFailureReported = false;
+try {
+    BackupService::createDatabase($restoreDb, $restoreActor, static function (string $target) use ($writeRestoreFixtureDump): int { $writeRestoreFixtureDump($target, 'metadata-failure'); return 0; }, $restoreTempRoot);
+} catch (Throwable) {
+    $metadataFailureReported = true;
+}
+$restoreDb->exec('DROP TRIGGER fail_backup_metadata');
+$assert($metadataFailureReported && count(glob($restoreTempRoot . DIRECTORY_SEPARATOR . 'database-*.sql') ?: []) === $backupFileCountBeforeMetadataFailure, 'metadata transaction failure removes the completed orphan dump and does not report success');
+$unauthorizedRestoreDenied = false;
+try {
+    BackupService::restoreDatabase($restoreDb, ['id' => 4, 'full_name' => 'Reviewer', 'role' => 'reviewer'], $databaseBackupId, 'RESTORE ' . $databaseBackupId);
+} catch (DomainException) {
+    $unauthorizedRestoreDenied = true;
+}
+$wrongConfirmationDenied = false;
+$safetyCreatorCalls = 0;
+try {
+    BackupService::restoreDatabase($restoreDb, $restoreActor, $databaseBackupId, 'RESTORE 999', null, static function () use (&$safetyCreatorCalls): int { $safetyCreatorCalls++; return 0; }, $restoreTempRoot);
+} catch (DomainException) {
+    $wrongConfirmationDenied = true;
+}
+$assert($unauthorizedRestoreDenied && $wrongConfirmationDenied && $safetyCreatorCalls === 0, 'restore denies non-admins and requires an exact typed confirmation before creating a safety backup');
+$restoreDb->exec("INSERT INTO backups (backup_type, storage_name, file_size_bytes, sha256, verification_status, created_by) VALUES ('files', 'files-20261029-120000-abcdef123456.tar', 512, 'checksum', 'verified', 9)");
+$wrongTypeId = (int) $restoreDb->lastInsertId();
+$wrongTypeDenied = false;
+try {
+    BackupService::restoreDatabase($restoreDb, $restoreActor, $wrongTypeId, 'RESTORE ' . $wrongTypeId);
+} catch (DomainException) {
+    $wrongTypeDenied = true;
+}
+$restoreDb->exec("UPDATE backups SET sha256='" . str_repeat('0', 64) . "' WHERE id=" . $databaseBackupId);
+$corruptRestoreDenied = false;
+try {
+    BackupService::restoreDatabase($restoreDb, $restoreActor, $databaseBackupId, 'RESTORE ' . $databaseBackupId);
+} catch (DomainException) {
+    $corruptRestoreDenied = true;
+}
+$assert($wrongTypeDenied && $corruptRestoreDenied, 'restore rejects file archives and database dumps with invalid checksums');
+$invalidFormatPath = $restoreTempRoot . DIRECTORY_SEPARATOR . 'database-20261029-120001-abcdef123457.sql';
+file_put_contents($invalidFormatPath, str_repeat('malformed dump content ', 100));
+$restoreDb->prepare('INSERT INTO backups (backup_type, storage_name, file_size_bytes, sha256, verification_status, created_by) VALUES (\'database\', :name, :size, :sha256, \'verified\', 9)')->execute(['name' => basename($invalidFormatPath), 'size' => filesize($invalidFormatPath), 'sha256' => hash_file('sha256', $invalidFormatPath)]);
+$invalidFormatId = (int) $restoreDb->lastInsertId();
+$invalidFormatDenied = false;
+try {
+    BackupService::restoreDatabase($restoreDb, $restoreActor, $invalidFormatId, 'RESTORE ' . $invalidFormatId);
+} catch (DomainException) {
+    $invalidFormatDenied = true;
+}
+$traversalDenied = false;
+$restoreDb->prepare('INSERT INTO backups (backup_type, storage_name, file_size_bytes, sha256, verification_status, created_by) VALUES (\'database\', :name, 1024, :sha256, \'verified\', 9)')->execute(['name' => '../outside.sql', 'sha256' => str_repeat('a', 64)]);
+$traversalId = (int) $restoreDb->lastInsertId();
+try {
+    BackupService::restoreDatabase($restoreDb, $restoreActor, $traversalId, 'RESTORE ' . $traversalId);
+} catch (DomainException) {
+    $traversalDenied = true;
+}
+$assert($invalidFormatDenied && $traversalDenied, 'restore rejects malformed SQL structure and path-traversal inventory names');
+$restoreDb->prepare('UPDATE backups SET sha256 = :sha256, verification_status = \'verified\' WHERE id = :id')->execute(['sha256' => hash_file('sha256', $databaseBackupFile), 'id' => $databaseBackupId]);
+$safetyBackupCreator = static function (PDO $testDatabase, array $actor, string $root) use ($writeRestoreFixtureDump, &$safetyCreatorCalls): int {
+    $safetyCreatorCalls++;
+    return BackupService::createDatabase($testDatabase, $actor, static function (string $target) use ($writeRestoreFixtureDump): int { $writeRestoreFixtureDump($target, 'safety'); return 0; }, $root);
+};
+$restoreExecutorCalls = 0;
+$simulatedRestoreExecutor = static function (string $path, PDO $testDatabase) use (&$restoreExecutorCalls): void {
+    $restoreExecutorCalls++;
+    if (!str_contains((string) file_get_contents($path), '-- isolated marker: selected')) throw new RuntimeException('Unexpected fixture dump.');
+    $testDatabase->exec("UPDATE restore_fixture SET value='after-restore' WHERE id=1");
+};
+$safetyCreatorCalls = 0;
+$safetyBackupId = BackupService::restoreDatabase($restoreDb, $restoreActor, $databaseBackupId, 'RESTORE ' . $databaseBackupId, $simulatedRestoreExecutor, $safetyBackupCreator, $restoreTempRoot);
+$restoreAuditActions = $restoreDb->query("SELECT action FROM audit_logs WHERE action LIKE 'backup.restore_%' ORDER BY id")->fetchAll(PDO::FETCH_COLUMN);
+$assert($restoreExecutorCalls === 1 && $safetyCreatorCalls === 1 && $restoreDb->query('SELECT value FROM restore_fixture WHERE id=1')->fetchColumn() === 'after-restore' && (int) $restoreDb->query('SELECT COUNT(*) FROM backups WHERE id=' . $safetyBackupId . " AND verification_status='verified'")->fetchColumn() === 1 && $restoreAuditActions === ['backup.restored'] && (int) $restoreDb->query('SELECT COUNT(*) FROM backups WHERE storage_name = ' . $restoreDb->quote($databaseBackupRow['storage_name']))->fetchColumn() === 1, 'isolated restore creates verified safety backup first, applies disposable state, preserves both files in history, and records completion after import');
+$failedRestoreSafety = static function (PDO $testDatabase, array $actor, string $root) use ($writeRestoreFixtureDump): int {
+    return BackupService::createDatabase($testDatabase, $actor, static function (string $target) use ($writeRestoreFixtureDump): int { $writeRestoreFixtureDump($target, 'failure-safety'); return 0; }, $root);
+};
+$restoreFailureReported = false;
+try {
+    BackupService::restoreDatabase($restoreDb, $restoreActor, $databaseBackupId, 'RESTORE ' . $databaseBackupId, static function (string $path, PDO $testDatabase): void { $testDatabase->exec("UPDATE restore_fixture SET value='partial-import' WHERE id=1"); throw new RuntimeException('synthetic importer failure'); }, $failedRestoreSafety, $restoreTempRoot);
+} catch (RuntimeException $error) {
+    $restoreFailureReported = str_contains($error->getMessage(), 'safety backup #');
+}
+$failureAudit = $restoreDb->query("SELECT outcome FROM audit_logs WHERE action='backup.restore_failed' ORDER BY id DESC LIMIT 1")->fetchColumn();
+$safetyHistoryAfterFailure = (int) $restoreDb->query('SELECT COUNT(*) FROM backups WHERE id=' . $safetyBackupId . " AND verification_status='verified'")->fetchColumn();
+$assert($restoreFailureReported && $restoreDb->query('SELECT value FROM restore_fixture WHERE id=1')->fetchColumn() === 'partial-import' && $failureAudit === 'failure' && $safetyHistoryAfterFailure === 1, 'failed isolated restore reports and retains verified safety backup metadata after partial import');
+$recoveryExecutor = static function (string $path, PDO $testDatabase): void {
+    if (!str_contains((string) file_get_contents($path), '-- isolated marker: safety')) throw new RuntimeException('Unexpected safety fixture.');
+    $testDatabase->exec("UPDATE restore_fixture SET value='recovered-from-safety' WHERE id=1");
+};
+$recoverySafetyCreator = static function (PDO $testDatabase, array $actor, string $root) use ($writeRestoreFixtureDump): int {
+    return BackupService::createDatabase($testDatabase, $actor, static function (string $target) use ($writeRestoreFixtureDump): int { $writeRestoreFixtureDump($target, 'recovery-safety'); return 0; }, $root);
+};
+BackupService::restoreDatabase($restoreDb, $restoreActor, $safetyBackupId, 'RESTORE ' . $safetyBackupId, $recoveryExecutor, $recoverySafetyCreator, $restoreTempRoot);
+$assert($restoreDb->query('SELECT value FROM restore_fixture WHERE id=1')->fetchColumn() === 'recovered-from-safety', 'isolated recovery can explicitly restore from the retained safety backup');
+$fileProjectRoot = $restoreTempRoot . DIRECTORY_SEPARATOR . 'project-fixture';
+$fileUploadsRoot = $restoreTempRoot . DIRECTORY_SEPARATOR . 'uploads-fixture';
+foreach (['app', 'public/assets', 'resources', 'database', 'scripts', 'vendor/library', 'vendor/node_modules/excluded', 'app/cache/excluded', 'config', 'storage/backups'] as $fixtureDirectory) {
+    mkdir($fileProjectRoot . DIRECTORY_SEPARATOR . str_replace('/', DIRECTORY_SEPARATOR, $fixtureDirectory), 0700, true);
+}
+mkdir($fileUploadsRoot . DIRECTORY_SEPARATOR . 'documents', 0700, true);
+$fileFixtureContents = [
+    $fileProjectRoot . '/app/service.php' => '<?php return "application";',
+    $fileProjectRoot . '/public/assets/app.css' => 'body{}',
+    $fileProjectRoot . '/resources/view.php' => '<main>fixture</main>',
+    $fileProjectRoot . '/database/schema.sql' => 'CREATE TABLE fixture (id INT);',
+    $fileProjectRoot . '/scripts/tool.php' => '<?php return true;',
+    $fileProjectRoot . '/vendor/library/runtime.php' => '<?php return "vendor";',
+    $fileProjectRoot . '/vendor/node_modules/excluded/private.txt' => 'do not include cache/vendor extras',
+    $fileProjectRoot . '/app/cache/excluded/cache.bin' => 'do not include cache',
+    $fileProjectRoot . '/config/database.example.php' => '<?php return ["host" => "example"];',
+    $fileProjectRoot . '/config/database.local.php' => '<?php return ["password" => "synthetic-secret"];',
+    $fileProjectRoot . '/.env' => 'synthetic-secret=must-not-archive',
+    $fileProjectRoot . '/storage/backups/prior.tar' => 'old backup must not archive',
+    $fileUploadsRoot . '/documents/application-fixture.pdf' => '%PDF synthetic upload fixture',
+    $fileUploadsRoot . '/documents/upload.tmp' => 'temporary file must not archive',
+];
+foreach ($fileFixtureContents as $fixturePath => $fixtureContent) file_put_contents($fixturePath, $fixtureContent);
+$fileBackupId = BackupService::createFiles($restoreDb, $restoreActor, $fileProjectRoot, $fileUploadsRoot, $restoreTempRoot);
+$fileBackupRow = $restoreDb->query('SELECT storage_name, file_size_bytes, sha256, verification_status FROM backups WHERE id=' . $fileBackupId)->fetch();
+$fileBackupPath = $restoreTempRoot . DIRECTORY_SEPARATOR . $fileBackupRow['storage_name'];
+$fileArchive = new PharData($fileBackupPath);
+$archiveEntries = [];
+foreach (new RecursiveIteratorIterator($fileArchive) as $archiveEntry) $archiveEntries[] = str_replace('\\', '/', $archiveEntry->getPathName());
+$archiveEntryText = implode("\n", $archiveEntries);
+$assert($fileBackupRow['verification_status'] === 'verified' && (int) $fileBackupRow['file_size_bytes'] === filesize($fileBackupPath) && hash_equals($fileBackupRow['sha256'], hash_file('sha256', $fileBackupPath)) && BackupIntegrity::checksumMatches($fileBackupPath, $fileBackupRow['sha256']) && !BackupIntegrity::checksumMatches($fileBackupPath, str_repeat('0', 64)) && BackupIntegrity::tarHasSafeStructure($fileBackupPath), 'file backup creation records a verified TAR with matching size and independently checked checksum/structure while rejecting a mismatched checksum');
+$assert(str_contains($archiveEntryText, 'application/app/service.php') && str_contains($archiveEntryText, 'application/vendor/library/runtime.php') && str_contains($archiveEntryText, 'application/config/database.example.php') && str_contains($archiveEntryText, 'uploads/documents/application-fixture.pdf'), 'file backup includes required application/runtime and uploaded-document fixtures');
+$assert(!str_contains($archiveEntryText, 'database.local.php') && !str_contains($archiveEntryText, '.env') && !str_contains($archiveEntryText, 'node_modules') && !str_contains($archiveEntryText, '/cache/') && !str_contains($archiveEntryText, 'prior.tar') && !str_contains($archiveEntryText, 'upload.tmp'), 'file backup excludes local credentials, caches, temporary files, and backup archives');
+$filesBeforeFailure = count(glob($restoreTempRoot . DIRECTORY_SEPARATOR . 'files-*.tar') ?: []);
+$fileWriterFailure = false;
+try {
+    BackupService::createFiles($restoreDb, $restoreActor, $fileProjectRoot, $fileUploadsRoot, $restoreTempRoot, static function (string $target): array { file_put_contents($target, 'partial tar'); throw new RuntimeException('synthetic archive failure'); });
+} catch (RuntimeException) {
+    $fileWriterFailure = true;
+}
+$assert($fileWriterFailure && count(glob($restoreTempRoot . DIRECTORY_SEPARATOR . 'files-*.tar') ?: []) === $filesBeforeFailure, 'archive writer failure removes incomplete file archive');
+$missingUploadsRejected = false;
+try {
+    BackupService::createFiles($restoreDb, $restoreActor, $fileProjectRoot, $restoreTempRoot . DIRECTORY_SEPARATOR . 'missing-uploads', $restoreTempRoot);
+} catch (RuntimeException) {
+    $missingUploadsRejected = true;
+}
+$assert($missingUploadsRejected && count(glob($restoreTempRoot . DIRECTORY_SEPARATOR . 'files-*.tar') ?: []) === $filesBeforeFailure, 'missing uploads source is rejected without creating an archive');
+$missingProjectRejected = false;
+try {
+    BackupService::createFiles($restoreDb, $restoreActor, $restoreTempRoot . DIRECTORY_SEPARATOR . 'missing-project', $fileUploadsRoot, $restoreTempRoot);
+} catch (RuntimeException) {
+    $missingProjectRejected = true;
+}
+$assert($missingProjectRejected && count(glob($restoreTempRoot . DIRECTORY_SEPARATOR . 'files-*.tar') ?: []) === $filesBeforeFailure, 'missing application source is rejected without recording a backup');
+$corruptFileBackupRejected = false;
+try {
+    BackupService::createFiles($restoreDb, $restoreActor, $fileProjectRoot, $fileUploadsRoot, $restoreTempRoot, static function (string $target): array { file_put_contents($target, str_repeat('not a tar archive ', 60)); return ['files' => 1, 'uploads' => 1]; });
+} catch (RuntimeException) {
+    $corruptFileBackupRejected = true;
+}
+$corruptFileStatus = $restoreDb->query("SELECT verification_status FROM backups WHERE backup_type='files' ORDER BY id DESC LIMIT 1")->fetchColumn();
+$assert($corruptFileBackupRejected && $corruptFileStatus === 'failed', 'corrupted TAR output is retained only with failed metadata and never marked successful');
+$restoreDb->exec("CREATE TRIGGER fail_file_backup_metadata BEFORE INSERT ON backups WHEN NEW.backup_type='files' BEGIN SELECT RAISE(ABORT, 'synthetic file backup metadata failure'); END");
+$filesBeforeMetadataFailure = count(glob($restoreTempRoot . DIRECTORY_SEPARATOR . 'files-*.tar') ?: []);
+$fileMetadataFailureReported = false;
+try {
+    BackupService::createFiles($restoreDb, $restoreActor, $fileProjectRoot, $fileUploadsRoot, $restoreTempRoot, static function (string $target): array {
+        $archive = new PharData($target);
+        $archive->addFromString('uploads/fixture.pdf', 'synthetic PDF bytes');
+        unset($archive);
+        return ['files' => 0, 'uploads' => 1];
+    });
+} catch (Throwable) {
+    $fileMetadataFailureReported = true;
+}
+$restoreDb->exec('DROP TRIGGER fail_file_backup_metadata');
+$assert($fileMetadataFailureReported && count(glob($restoreTempRoot . DIRECTORY_SEPARATOR . 'files-*.tar') ?: []) === $filesBeforeMetadataFailure, 'file backup metadata transaction failure cleans the unrecorded archive');
+$productionManifestUploads = $restoreTempRoot . DIRECTORY_SEPARATOR . 'production-manifest-uploads';
+$productionManifestBackups = $restoreTempRoot . DIRECTORY_SEPARATOR . 'production-manifest-backups';
+mkdir($productionManifestUploads, 0700, true);
+mkdir($productionManifestBackups, 0700, true);
+file_put_contents($productionManifestUploads . DIRECTORY_SEPARATOR . 'synthetic-large.pdf', str_repeat('synthetic upload payload ', 45000));
+$manifestStart = microtime(true);
+$productionManifestBackupId = BackupService::createFiles($restoreDb, $restoreActor, dirname(__DIR__), $productionManifestUploads, $productionManifestBackups);
+$manifestSeconds = round(microtime(true) - $manifestStart, 3);
+$productionManifestRow = $restoreDb->query('SELECT storage_name, file_size_bytes, sha256, verification_status FROM backups WHERE id=' . $productionManifestBackupId)->fetch();
+$productionManifestPath = $productionManifestBackups . DIRECTORY_SEPARATOR . $productionManifestRow['storage_name'];
+$assert($productionManifestRow['verification_status'] === 'verified' && BackupIntegrity::checksumMatches($productionManifestPath, $productionManifestRow['sha256']) && BackupIntegrity::tarHasSafeStructure($productionManifestPath) && $manifestSeconds < 10, 'expanded real-project manifest plus synthetic large upload completes, verifies, and stays below the controlled 10-second performance ceiling');
+fwrite(STDOUT, 'File backup performance probe: ' . $manifestSeconds . 's, ' . (int) $productionManifestRow['file_size_bytes'] . ' bytes' . PHP_EOL);
+$restoreRouteSource = file_get_contents(dirname(__DIR__) . '/public/index.php');
+$restoreViewSource = file_get_contents(dirname(__DIR__) . '/resources/views/staff/backups.php');
+$assert(is_string($restoreRouteSource) && str_contains($restoreRouteSource, "if (\$path === '/staff/backup/restore')") && str_contains($restoreRouteSource, "\$user['role'] !== 'admin'") && str_contains($restoreRouteSource, 'verify_csrf();') && is_string($restoreViewSource) && str_contains($restoreViewSource, 'method="post" action="/staff/backup/restore"') && str_contains($restoreViewSource, 'name="_csrf"') && str_contains($restoreViewSource, 'name="confirmation"'), 'restore route is a CSRF-protected admin POST and UI confirms an existing inventory ID');
+$backupSource = file_get_contents(dirname(__DIR__) . '/app/BackupService.php');
+$assert(is_string($backupSource) && str_contains($backupSource, "self::markStage('dump-process-execution', 'database')") && str_contains($backupSource, "self::markStage('metadata-insert', 'files')") && str_contains($backupSource, "self::markStage('metadata-commit', 'database')") && str_contains($backupSource, "self::markStage('archive-creation', 'files')"), 'database and file backup services mark their active processing stages');
+$assert(is_string($restoreRouteSource) && str_contains($restoreRouteSource, 'register_shutdown_function') && str_contains($restoreRouteSource, "'fatal_type' => \$fatal['type']") && str_contains($restoreRouteSource, "'fatal_line' => (int) (\$fatal['line'] ?? 0)") && str_contains($restoreRouteSource, "'event' => 'fatal'") && str_contains($restoreRouteSource, 'output_committed') && !str_contains($restoreRouteSource, "\$fatal['message']") && is_string($backupSource) && str_contains($backupSource, "'exception_class', 'diagnostic', 'fatal_type', 'fatal_line', 'output_committed'") && !str_contains($backupSource, "'output_path' =>"), 'backup shutdown logs correlated fatal type/stage and guarded cleanup using an allowlisted diagnostic record');
+$removeRestoreFixtureTree = static function (string $path) use (&$removeRestoreFixtureTree): void {
+    if (is_link($path) || is_file($path)) {
+        unlink($path);
+        return;
+    }
+    if (is_dir($path)) {
+        foreach (new FilesystemIterator($path, FilesystemIterator::SKIP_DOTS) as $child) $removeRestoreFixtureTree($child->getPathname());
+        rmdir($path);
+    }
+};
+$removeRestoreFixtureTree($restoreTempRoot);
 $assert(SecurityPolicy::ownsRecord($userId, $userId), 'owner can access own record');
 $assert(!SecurityPolicy::ownsRecord($userId, $userTwoId), 'student cannot access another student record');
 $assert(SecurityPolicy::passwordLengthLimits() === ['min' => 10, 'max' => 200] && !SecurityPolicy::passwordLengthIsValid(str_repeat('a', 9)) && SecurityPolicy::passwordLengthIsValid(str_repeat('a', 10)) && SecurityPolicy::passwordLengthIsValid(str_repeat('a', 200)) && !SecurityPolicy::passwordLengthIsValid(str_repeat('a', 201)), 'shared password length policy exposes and validates the existing 10-to-200-byte boundaries');
@@ -168,7 +444,7 @@ $printStylesSource = file_get_contents(dirname(__DIR__) . '/public/assets/css/ap
 $assert(is_string($passwordControllerSource) && str_contains($passwordControllerSource, 'if (!in_array($user[\'role\'], [\'reviewer\', \'admin\'], true))') && str_contains($passwordControllerSource, 'StaffService::applications($database, $user, $_GET, true, true)') && is_string($reportViewSource) && str_contains($reportViewSource, 'data-print'), 'reviewers and administrators share the authorized report route and print action');
 $assert(is_string($printStylesSource) && str_contains($printStylesSource, '@page { size: A4;') && str_contains($printStylesSource, '.app-sidebar, .app-sidebar-backdrop, .app-topbar') && str_contains($printStylesSource, '.staff-table thead { display: table-header-group; }') && str_contains($printStylesSource, '.staff-table tr { break-inside: avoid;'), 'print rules hide application controls while preserving paginated report content');
 $assert(is_string($studentPrintViewSource) && is_string($studentPrintContentSource) && str_contains($studentPrintContentSource, 'Draft application summary') && str_contains($studentPrintContentSource, 'application has been accepted') && str_contains($studentPrintContentSource, 'recorded as complete') && !str_contains($studentPrintContentSource, 'storage_name') && !str_contains($studentPrintContentSource, 'password_reset') && str_contains($studentPrintViewSource, 'print-document-content.php'), 'shared student document content labels drafts and separate outcomes without private storage or security data');
-$assert(is_string($passwordControllerSource) && str_contains($passwordControllerSource, 'require_student()') && str_contains($passwordControllerSource, 'ApplicationService::printableSummary($database, (int) $user[\'id\'])') && str_contains($passwordControllerSource, 'Cache-Control: private, no-store') && is_string($studentPortalSource) && str_contains($studentPortalSource, "'printUrl' => '/application/print'") && str_contains($studentPortalSource, "'printUrl' => '/application/acceptance-letter'") && str_contains($studentPortalSource, "'printUrl' => '/application/enrollment-confirmation'") && str_contains($studentPortalSource, 'data-bs-target="#applicationSummaryModal"'), 'student print routes remain owner-protected and available from portal document modals');
+$assert(is_string($passwordControllerSource) && str_contains($passwordControllerSource, 'require_student()') && str_contains($passwordControllerSource, 'ApplicationService::printableSummary($database, (int) $user[\'id\'])') && str_contains($passwordControllerSource, 'Cache-Control: private, no-store') && is_string($studentPortalSource) && str_contains($studentPortalSource, 'data-print') && str_contains($studentPortalSource, 'data-bs-target="#applicationSummaryModal"'), 'student print uses direct window.print from portal document modals with owner-protected routes');
 $assert(is_string($academicSettingsViewSource) && str_contains($academicSettingsViewSource, "'id' => 'createProgramModal'") && str_contains($academicSettingsViewSource, "'id' => 'createYearModal'") && str_contains($academicSettingsViewSource, "'id' => 'createRequirementModal'") && str_contains($academicSettingsViewSource, 'name="_csrf"') && str_contains($academicSettingsViewSource, 'data-submit-once') && str_contains($academicSettingsViewSource, "'action' => '/staff/requirement/save'"), 'academic create forms use Bootstrap modals and preserve CSRF-protected existing form posts');
 $assert(is_string($staffUsersViewSource) && str_contains($staffUsersViewSource, 'id="createStaffAccountModal"') && str_contains($staffUsersViewSource, 'action="/staff/user/save"') && str_contains($staffUsersViewSource, 'name="role"') && str_contains($staffUsersViewSource, 'name="_csrf"') && str_contains($staffUsersViewSource, 'data-submit-once') && is_string($applicationModalScriptSource) && str_contains($applicationModalScriptSource, 'data-create-form-modal'), 'staff account modal retains role assignment, CSRF, existing endpoint, and duplicate-submit prevention');
 $assert(is_string($profileViewSource) && str_contains($profileViewSource, 'name="full_name"') && str_contains($profileViewSource, 'Read-only') && !str_contains($profileViewSource, 'password_hash'), 'profile page supports validated display-name edit and keeps email read-only without sensitive data');
@@ -208,8 +484,12 @@ $invalidProfileUpdate = AccountSettingsService::updateProfileName($database, ['i
 $assert(!$invalidProfileUpdate['ok'] && $database->query('SELECT full_name FROM users WHERE id=' . $userId)->fetchColumn() === $originalProfileName, 'invalid profile update preserves existing account name');
 $validProfileUpdate = AccountSettingsService::updateProfileName($database, ['id' => $userId, 'full_name' => $originalProfileName, 'role' => 'student'], 'Fixture Student Updated');
 $assert($validProfileUpdate['ok'] && $database->query('SELECT full_name FROM users WHERE id=' . $userId)->fetchColumn() === 'Fixture Student Updated' && (int) $database->query("SELECT COUNT(*) FROM audit_logs WHERE action='account.profile_updated' AND entity_id=" . $userId)->fetchColumn() === 1, 'valid self-profile name update is persisted and audited');
+$profileAuditIp = $database->query("SELECT ip_address FROM audit_logs WHERE action='account.profile_updated' AND entity_id=" . $userId . ' ORDER BY id DESC LIMIT 1')->fetchColumn();
+$assert($profileAuditIp === '192.0.2.10', 'account profile-change audit event stores the direct client IP');
 $assert((string) $database->query('SELECT full_name FROM users WHERE id=' . $userTwoId)->fetchColumn() === 'Fixture Two', "profile update cannot alter another user's account");
 $staffAccount = StaffAccountService::create($database, ['id' => $adminId, 'full_name' => 'Fixture Admin', 'role' => 'admin'], 'Fixture New Reviewer', 'new.reviewer@example.test', 'reviewer');
+$staffCreationAuditIp = $database->query("SELECT ip_address FROM audit_logs WHERE action='user.staff_account_created' ORDER BY id DESC LIMIT 1")->fetchColumn();
+$assert($staffCreationAuditIp === '192.0.2.10', 'staff account creation audit event stores the direct client IP');
 parse_str((string) parse_url($staffAccount['setup_path'], PHP_URL_QUERY), $setupQuery);
 $setupToken = (string) ($setupQuery['token'] ?? '');
 $staffTokenQuery = $database->prepare('SELECT token_hash FROM password_reset_tokens WHERE user_id = :user_id ORDER BY id DESC LIMIT 1');
@@ -225,6 +505,9 @@ $staffAccountViewSource = file_get_contents(dirname(__DIR__) . '/resources/views
 $assert(is_string($staffAccountViewSource) && str_contains($staffAccountViewSource, '$userCategories') && str_contains($staffAccountViewSource, 'name="role"') && str_contains($staffAccountViewSource, 'name="account_status"') && str_contains($staffAccountViewSource, 'name="q"') && str_contains($staffAccountViewSource, 'One-time password setup link') && str_contains($staffAccountViewSource, 'data-confirm="Apply this role and account-status change?"'), 'user administration exposes role/status/search filters, data-driven category sections, and existing access-change confirmation');
 $_SESSION = [];
 $frontController = file_get_contents(dirname(__DIR__) . '/public/index.php');
+$backupIntegrityRequire = is_string($frontController) ? strpos($frontController, "require dirname(__DIR__) . '/app/BackupIntegrity.php';") : false;
+$backupServiceRequire = is_string($frontController) ? strpos($frontController, "require dirname(__DIR__) . '/app/BackupService.php';") : false;
+$assert($backupIntegrityRequire !== false && $backupServiceRequire !== false && $backupIntegrityRequire < $backupServiceRequire, 'web front controller loads BackupIntegrity before BackupService so live backup integrity checks are available');
 $assert(substr_count($frontController, 'AccountSettingsService::applicationStartGate($database, (int) $user[\'id\'])') === 2 && str_contains($frontController, 'if ($existingApplication === null)') && str_contains($frontController, "redirect('/settings/profile?complete_application=1')"), 'both GET and POST new-application routes share a server-side profile gate while existing applications bypass it');
 $assert(is_string($frontController) && str_contains($frontController, "if (\$path === '/')") && str_contains($frontController, 'redirect(portal_path_for_user($user))'), 'public home route redirects authenticated users while leaving logged-out visitors on the public page');
 $forgotPasswordViewSource = file_get_contents(dirname(__DIR__) . '/resources/views/auth/forgot-password.php');
@@ -575,6 +858,8 @@ $workflowDb->exec('DELETE FROM student_profiles WHERE user_id=6');
 $workflowDb->exec('DELETE FROM users WHERE id=6');
 $submission = ApplicationService::save($workflowDb, 1, $validSubmission, [], true);
 $assert($submission['ok'], 'valid application can be submitted');
+$submissionAuditIp = $workflowDb->query("SELECT ip_address FROM audit_logs WHERE action='application.submitted' ORDER BY id DESC LIMIT 1")->fetchColumn();
+$assert($submissionAuditIp === '192.0.2.10', 'application submission audit event stores the direct client IP');
 $submissionCounts = $workflowDb->query('SELECT (SELECT COUNT(*) FROM applications WHERE student_id=1) AS applications, (SELECT COUNT(*) FROM application_status_history WHERE application_id=' . $draftApplicationId . ') AS history, (SELECT COUNT(*) FROM notifications WHERE user_id=1) AS notifications')->fetch();
 $assert($submissionCounts['applications'] === 1 && $submissionCounts['history'] === 1 && $submissionCounts['notifications'] === 1, 'successful submission writes one application, history event, and notification');
 $duplicateSubmission = ApplicationService::save($workflowDb, 1, $validSubmission, [], true);
@@ -602,10 +887,10 @@ $adminNotificationFeed = NotificationService::feed($workflowDb, ['id' => 5, 'rol
 $studentNotification = array_values(array_filter($studentNotificationFeed['items'], static fn (array $item): bool => $item['id'] === $studentNotificationId))[0] ?? [];
 $reviewerNotification = array_values(array_filter($reviewerNotificationFeed['items'], static fn (array $item): bool => $item['id'] === $reviewerNotificationId))[0] ?? [];
 $adminNotification = array_values(array_filter($adminNotificationFeed['items'], static fn (array $item): bool => $item['id'] === $adminNotificationId))[0] ?? [];
-$assert($studentNotificationFeed['persistent_unread_count'] === 1 && ($studentNotification['href'] ?? '') === '/portal', 'student feed counts and links only the signed-in student’s notification');
-$assert($reviewerNotificationFeed['persistent_unread_count'] === 1 && ($reviewerNotification['href'] ?? '') === '/staff/application/2' && !in_array('/staff/application/3', array_column($reviewerNotificationFeed['items'], 'href'), true), 'reviewer feed links assigned work and does not expose another reviewer’s application');
+$assert($studentNotificationFeed['persistent_unread_count'] === 1 && ($studentNotification['href'] ?? '') === '/portal', 'student feed counts and links only the signed-in studentâ€™s notification');
+$assert($reviewerNotificationFeed['persistent_unread_count'] === 1 && ($reviewerNotification['href'] ?? '') === '/staff/application/2' && !in_array('/staff/application/3', array_column($reviewerNotificationFeed['items'], 'href'), true), 'reviewer feed links assigned work and does not expose another reviewerâ€™s application');
 $assert($adminNotificationFeed['persistent_unread_count'] === 1 && ($adminNotification['href'] ?? '') === '/staff/backups', 'administrator feed shows its own notification with the supported administration destination');
-$assert(!NotificationService::markRead($workflowDb, ['id' => 1, 'role' => 'student'], $studentNotificationId) && (int) $workflowDb->query('SELECT COUNT(*) FROM notifications WHERE id=' . $studentNotificationId . ' AND read_at IS NULL')->fetchColumn() === 1, 'user cannot mark another account’s notification as read');
+$assert(!NotificationService::markRead($workflowDb, ['id' => 1, 'role' => 'student'], $studentNotificationId) && (int) $workflowDb->query('SELECT COUNT(*) FROM notifications WHERE id=' . $studentNotificationId . ' AND read_at IS NULL')->fetchColumn() === 1, 'user cannot mark another accountâ€™s notification as read');
 $assert(NotificationService::markRead($workflowDb, ['id' => 2, 'role' => 'student'], $studentNotificationId) && (int) $workflowDb->query('SELECT COUNT(*) FROM notifications WHERE id=' . $studentNotificationId . ' AND read_at IS NULL')->fetchColumn() === 0, 'authenticated owner can mark one notification as read');
 $assert(NotificationService::markAllRead($workflowDb, ['id' => 3, 'role' => 'reviewer']) === 1 && (int) $workflowDb->query('SELECT COUNT(*) FROM notifications WHERE id=' . $reviewerNotificationId . ' AND read_at IS NULL')->fetchColumn() === 0 && (int) $workflowDb->query('SELECT COUNT(*) FROM notifications WHERE id=' . $adminNotificationId . ' AND read_at IS NULL')->fetchColumn() === 1, 'mark all read is limited to the authenticated account');
 $notificationFixtureInsert = $workflowDb->prepare('INSERT INTO notifications (user_id, type, title, message, related_type, related_id, created_at) VALUES (2, \'application_status\', :title, \'Fixture message\', \'application\', 2, :created_at)');
@@ -953,6 +1238,8 @@ try {
     $replacementReviewError = $error->getMessage();
 }
 $assert($replacementReview && $workflowDb->query('SELECT status FROM applications WHERE id=2')->fetchColumn() === 'in_screening', 'verified replacement returns incomplete application to screening (' . $replacementReviewError . ')');
+$reviewAuditIp = $workflowDb->query("SELECT ip_address FROM audit_logs WHERE action='document.reviewed' ORDER BY id DESC LIMIT 1")->fetchColumn();
+$assert($reviewAuditIp === '192.0.2.10', 'document review audit event stores the direct client IP');
 $historicalDocument = StaffService::authorizedDocument($workflowDb, $reviewerOne, 1, false, true);
 $historyDetail = StaffService::detail($workflowDb, $reviewerOne, 2);
 $assert(is_array($historicalDocument) && count($historyDetail['document_history']) === 1, 'authorized staff can retrieve preserved prior version and its history');
@@ -966,6 +1253,8 @@ try {
     $acceptedStatusError = $error->getMessage();
 }
 $assert($acceptedStatus && $workflowDb->query('SELECT status FROM applications WHERE id=2')->fetchColumn() === 'accepted', 'fully verified application may be accepted (' . $acceptedStatusError . ')');
+$statusAuditIp = $workflowDb->query("SELECT ip_address FROM audit_logs WHERE action='application.status_changed' AND entity_id=2 ORDER BY id DESC LIMIT 1")->fetchColumn();
+$assert($statusAuditIp === '192.0.2.10', 'staff application status audit event stores the direct client IP');
 $enrollmentBlocked = false;
 try {
     StaffService::changeStatus($workflowDb, $adminUser, 2, 'enrolled');
@@ -1162,7 +1451,7 @@ try {
 } catch (DomainException) {
     $unauthorizedEnrolledOutcome = true;
 }
-$assert($unauthorizedEnrolledOutcome && $workflowDb->query('SELECT status FROM interviews WHERE id=122')->fetchColumn() === 'scheduled', 'unassigned reviewer cannot finalize another reviewer’s enrolled application interview');
+$assert($unauthorizedEnrolledOutcome && $workflowDb->query('SELECT status FROM interviews WHERE id=122')->fetchColumn() === 'scheduled', 'unassigned reviewer cannot finalize another reviewerâ€™s enrolled application interview');
 $invalidEnrolledOutcome = false;
 try {
     StaffService::updateInterview($workflowDb, $reviewerOne, 70, 123, 'accepted', 'Invalid outcome value.');
@@ -1327,8 +1616,92 @@ try {
 } catch (DomainException) {
     $invalidAuditDates = true;
 }
+$invalidAuditOutcome = false;
+$oversizedAuditSearch = false;
+try {
+    StaffService::auditLog($workflowDb, ['outcome' => 'invented']);
+} catch (DomainException) {
+    $invalidAuditOutcome = true;
+}
+try {
+    StaffService::auditLog($workflowDb, ['q' => str_repeat('x', 161)]);
+} catch (DomainException) {
+    $oversizedAuditSearch = true;
+}
 $assert($auditPageOne['pagination']['total'] === 23 && count($auditPageOne['rows']) === 10 && count($auditPageTwo['rows']) === 10 && (int) $auditPageOne['rows'][0]['id'] > (int) $auditPageOne['rows'][1]['id'] && $auditPageTwo['filters']['action'] === 'pagination.fixture' && $auditSearchPage['pagination']['total'] === 23, 'audit log applies activity, actor, and text filters before pagination and orders ties deterministically');
 $assert($auditDatePage['pagination']['total'] === 23 && $invalidAuditDates, 'audit event date range uses Asia/Manila calendar days and rejects invalid ordering');
+$specialAuditActor = "=2+2,\"quoted\"\nline";
+$specialAuditIp = "\t@SUM(1,1)";
+$specialAuditUpdate = $workflowDb->prepare('UPDATE audit_logs SET actor_label = :actor, ip_address = :ip WHERE action = \'pagination.fixture\' AND entity_id = 1');
+$specialAuditUpdate->execute(['actor' => $specialAuditActor, 'ip' => $specialAuditIp]);
+$auditCsvFixtures = $workflowDb->prepare('UPDATE audit_logs SET actor_label = :actor, ip_address = :ip WHERE action = \'pagination.fixture\' AND entity_id = :entity_id');
+$auditCsvFixtures->execute(['actor' => '+1+1', 'ip' => '192.0.2.18', 'entity_id' => 2]);
+$auditCsvFixtures->execute(['actor' => '-1+1', 'ip' => '2001:db8::1', 'entity_id' => 3]);
+$auditCsvFixtures->execute(['actor' => '@SUM(A1:A2)', 'ip' => null, 'entity_id' => 4]);
+$auditCsvFixtures->execute(['actor' => " \x1C=1+1", 'ip' => null, 'entity_id' => 5]);
+$auditCsvFixtures->execute(['actor' => "\t=1+1", 'ip' => null, 'entity_id' => 6]);
+$auditCsvFixtures->execute(['actor' => "\r=1+1", 'ip' => null, 'entity_id' => 7]);
+$auditCsvFixtures->execute(['actor' => "\n=1+1", 'ip' => null, 'entity_id' => 8]);
+$auditCsvFixtures->execute(['actor' => "\u{00A0}=1+1", 'ip' => null, 'entity_id' => 9]);
+$auditCsvFixtures->execute(['actor' => 'Ångström, 李', 'ip' => null, 'entity_id' => 10]);
+$auditExport = StaffService::auditLogExport($workflowDb, $adminUser, ['action' => 'pagination.fixture', 'page' => 2, 'per_page' => 10]);
+$auditExportFiltered = StaffService::auditLogExport($workflowDb, $adminUser, ['q' => 'quoted', 'actor' => 'quoted', 'action' => 'pagination.fixture', 'start_date' => '2026-10-26', 'end_date' => '2026-10-26', 'page' => 2]);
+$auditExportEmpty = StaffService::auditLogExport($workflowDb, $adminUser, ['action' => 'does.not.exist']);
+$auditExportUnauthorized = false;
+try {
+    StaffService::auditLogExport($workflowDb, $reviewerOne, []);
+} catch (DomainException) {
+    $auditExportUnauthorized = true;
+}
+$auditExportCsv = stream_get_contents($auditExport['stream']);
+fclose($auditExport['stream']);
+$auditExportFilteredCsv = stream_get_contents($auditExportFiltered['stream']);
+fclose($auditExportFiltered['stream']);
+$auditExportEmptyCsv = stream_get_contents($auditExportEmpty['stream']);
+fclose($auditExportEmpty['stream']);
+$csvStream = fopen('php://temp', 'w+b');
+fwrite($csvStream, $auditExportCsv);
+rewind($csvStream);
+$csvHeader = fgetcsv($csvStream, null, ',', '"', '');
+$csvRows = [];
+while (($csvRow = fgetcsv($csvStream, null, ',', '"', '')) !== false) $csvRows[] = $csvRow;
+fclose($csvStream);
+$specialCsvRow = array_values(array_filter($csvRows, static fn (array $row): bool => str_contains((string) ($row[2] ?? ''), 'quoted')))[0] ?? [];
+$csvRowsByEntity = [];
+foreach ($csvRows as $csvRow) $csvRowsByEntity[(int) ($csvRow[5] ?? 0)] = $csvRow;
+$emptyCsvStream = fopen('php://temp', 'w+b');
+fwrite($emptyCsvStream, $auditExportEmptyCsv);
+rewind($emptyCsvStream);
+$emptyCsvHeader = fgetcsv($emptyCsvStream, null, ',', '"', '');
+$emptyCsvRow = fgetcsv($emptyCsvStream, null, ',', '"', '');
+fclose($emptyCsvStream);
+$auditEndpointSource = file_get_contents(dirname(__DIR__) . '/public/index.php');
+$auditExportViewSource = file_get_contents(dirname(__DIR__) . '/resources/views/staff/audit.php');
+$assert(str_starts_with($auditExportCsv, "\xEF\xBB\xBF") && count($csvRows) === 23 && count($csvHeader) === 9 && $csvHeader[6] === 'IP Address' && $auditExport['row_count'] === 23, 'audit CSV is UTF-8 BOM encoded and exports all matching rows beyond the requested page with schema-backed headers including recorded IP');
+$assert($auditExportFiltered['row_count'] === 1 && $auditExportFiltered['filters']['actor'] === 'quoted' && $auditExportFiltered['filters']['start_date'] === '2026-10-26' && $auditExportFiltered['filters']['end_date'] === '2026-10-26', 'audit CSV applies combined text, actor, activity, and date filters independently of pagination');
+$assert(($specialCsvRow[2] ?? null) === "'" . $specialAuditActor && ($specialCsvRow[6] ?? null) === "'" . $specialAuditIp && count($specialCsvRow) === 9, 'audit CSV quotes commas, quotation marks, and line breaks and prefixes formula-triggering actor/IP values');
+$assert(($csvRowsByEntity[2][2] ?? null) === "'+1+1" && ($csvRowsByEntity[3][2] ?? null) === "'-1+1" && ($csvRowsByEntity[4][2] ?? null) === "'@SUM(A1:A2)" && ($csvRowsByEntity[5][2] ?? null) === "' \x1C=1+1", 'audit CSV neutralizes plus, minus, at-sign, and control-prefixed formulas in untrusted actor text');
+$assert(($csvRowsByEntity[6][2] ?? null) === "'\t=1+1" && ($csvRowsByEntity[7][2] ?? null) === "'\r=1+1" && ($csvRowsByEntity[8][2] ?? null) === "'\n=1+1" && ($csvRowsByEntity[9][2] ?? null) === "'\u{00A0}=1+1", 'audit CSV neutralizes formulas preceded by tab, carriage return, line feed, and Unicode whitespace');
+$assert(($csvRowsByEntity[10][2] ?? null) === 'Ångström, 李' && ($csvRowsByEntity[1][1] ?? null) === '5' && ($csvRowsByEntity[1][5] ?? null) === '1', 'audit CSV preserves Unicode and ordinary numeric identifier values');
+$assert(($csvRowsByEntity[2][6] ?? null) === '192.0.2.18' && ($csvRowsByEntity[3][6] ?? null) === '2001:db8::1' && ($csvRowsByEntity[4][6] ?? null) === '', 'audit CSV preserves stored IPv4 and IPv6 addresses and represents missing IP values as empty cells');
+$assert(count($emptyCsvHeader) === 9 && $emptyCsvRow === false && str_contains($auditExportEmptyCsv, 'Timestamp (UTC)'), 'empty audit export is a valid header-only CSV');
+$assert($invalidAuditOutcome && $oversizedAuditSearch && !preg_match('/<\/?(?:html|body|br)|Warning:|Notice:/i', $auditExportCsv), 'audit export rejects invalid/oversized filters and contains no PHP warning or HTML output');
+$assert($auditExportUnauthorized && !in_array('details', $csvHeader, true) && !in_array('password', $csvHeader, true) && !in_array('token', $csvHeader, true), 'audit export enforces administrator authorization and excludes details and credential columns');
+$auditExportEventsBefore = (int) $workflowDb->query("SELECT COUNT(*) FROM audit_logs WHERE action='audit.exported'")->fetchColumn();
+StaffService::recordAuditExport($workflowDb, $adminUser);
+$auditExportEventsAfter = (int) $workflowDb->query("SELECT COUNT(*) FROM audit_logs WHERE action='audit.exported'")->fetchColumn();
+$auditExportEventIp = $workflowDb->query("SELECT ip_address FROM audit_logs WHERE action='audit.exported' ORDER BY id DESC LIMIT 1")->fetchColumn();
+$assert($auditExportEventsAfter === $auditExportEventsBefore + 1 && $auditExport['row_count'] === 23 && !str_contains($auditExportCsv, 'audit.exported') && $auditExportEventIp === '192.0.2.10', 'audit export records its direct client IP after capture without recursively including the event');
+$assert(is_string($auditEndpointSource) && str_contains($auditEndpointSource, "if (\$path === '/staff/audit.csv')") && str_contains($auditEndpointSource, "\$user['role'] !== 'admin'") && str_contains($auditEndpointSource, "header('Content-Type: text/csv; charset=utf-8')") && str_contains($auditEndpointSource, "header('Cache-Control: no-store, private')") && str_contains($auditEndpointSource, 'Content-Disposition: attachment') && is_string($auditExportViewSource) && str_contains($auditExportViewSource, 'action="/staff/audit.csv"') && str_contains($auditExportViewSource, 'name="_csrf"'), 'audit export endpoint checks admin role, returns protected CSV attachment headers, and view submits CSRF-protected filter values');
+$largeAuditExportDb = new PDO('sqlite::memory:', null, null, [PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION, PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC]);
+$largeAuditExportDb->exec('CREATE TABLE audit_logs (id INTEGER PRIMARY KEY, user_id INTEGER NULL, actor_label TEXT, action TEXT, entity_type TEXT NULL, entity_id INTEGER NULL, outcome TEXT, severity TEXT, ip_address TEXT NULL, created_at TEXT)');
+$largeAuditInsert = $largeAuditExportDb->prepare('INSERT INTO audit_logs (user_id, actor_label, action, entity_type, entity_id, outcome, severity, ip_address, created_at) VALUES (7, :actor, \'batch.fixture\', \'test\', :entity_id, \'success\', \'info\', NULL, \'2026-10-26 12:00:00\')');
+for ($largeAuditIndex = 1; $largeAuditIndex <= 1005; $largeAuditIndex++) {
+    $largeAuditInsert->execute(['actor' => 'Batch fixture', 'entity_id' => $largeAuditIndex]);
+}
+$largeAuditExport = StaffService::auditLogExport($largeAuditExportDb, $adminUser, ['action' => 'batch.fixture', 'page' => 100, 'per_page' => 10]);
+$assert($largeAuditExport['row_count'] === 1005 && is_resource($largeAuditExport['stream']) && ftell($largeAuditExport['stream']) === 0, 'audit export iterates keyset batches beyond 500 rows and ignores requested pagination');
+fclose($largeAuditExport['stream']);
 foreach ([['status' => 'invented'], ['start_date' => '2026-02-30'], ['start_date' => '2026-12-01', 'end_date' => '2026-11-01'], ['program_id' => '0'], ['reviewer_id' => '999']] as $badFilter) {
     $filterRejected = false;
     try {
@@ -1441,6 +1814,10 @@ $_SESSION['captcha_answer'] = '7';
 $successfulLogin = AuthService::login($database, ['email' => 'one@example.test', 'password' => 'OldPass!2345', 'captcha_answer' => '7', 'login_type' => 'staff']);
 $assert($successfulLogin['ok'] && session_id() !== $sessionIdBeforeLogin, 'successful login regenerates the session identifier');
 $assert($_SESSION['user']['role'] === 'student', 'student role comes from the account record despite a submitted staff login type');
+$loginAuditIps = $database->query("SELECT action, ip_address FROM audit_logs WHERE action IN ('auth.login_succeeded', 'auth.login_failed') ORDER BY id")->fetchAll();
+$successfulLoginIps = array_values(array_filter($loginAuditIps, static fn (array $row): bool => $row['action'] === 'auth.login_succeeded'));
+$failedLoginIps = array_values(array_filter($loginAuditIps, static fn (array $row): bool => $row['action'] === 'auth.login_failed'));
+$assert($successfulLoginIps !== [] && $failedLoginIps !== [] && array_unique(array_column($loginAuditIps, 'ip_address')) === ['192.0.2.10'], 'successful and failed login audit events store only the direct client IP');
 $_SESSION['captcha_answer'] = '7';
 $reviewerLogin = AuthService::login($database, ['email' => 'reviewer@example.test', 'password' => 'ReviewerPass!2345', 'captcha_answer' => '7', 'login_type' => 'student']);
 $assert($reviewerLogin['ok'] && $_SESSION['user']['id'] === $reviewerId && $_SESSION['user']['role'] === 'reviewer', 'reviewer can use shared authentication and receives the database role');
@@ -1462,6 +1839,8 @@ $assert(is_array($stored) && hash_equals($stored['token_hash'], hash('sha256', $
 $assert($stored['used_at'] === null, 'successfully delivered reset token remains unused');
 $resetResult = PasswordResetService::reset($database, $deliveryCaptured['token'], 'ChangedPass!234', 'ChangedPass!234');
 $assert($resetResult['ok'], 'valid token resets password');
+$resetAuditIp = $database->query("SELECT ip_address FROM audit_logs WHERE action='auth.password_reset' ORDER BY id DESC LIMIT 1")->fetchColumn();
+$assert($resetAuditIp === '192.0.2.10', 'successful password-reset audit event stores the direct client IP');
 $assert(password_verify('ChangedPass!234', $database->query('SELECT password_hash FROM users WHERE id=' . $userId)->fetchColumn()), 'successful reset stores a password hash');
 $database->exec('DELETE FROM login_attempts');
 $_SESSION['captcha_answer'] = '7';

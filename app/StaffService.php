@@ -395,24 +395,48 @@ final class StaffService
         return ['rows' => $statement->fetchAll(), 'total' => $total, 'summary' => $summary, 'truncated' => $allRows && !$paginateAllRows && $total > $pageSize, 'page' => $pagination['page'], 'page_size' => $pageSize, 'pagination' => $pagination, 'filters' => $input];
     }
 
-    public static function auditLog(PDO $database, array $input): array
+    public static function auditLog(PDO $database, array $input, bool $allRows = false): array
+    {
+        $filter = self::auditLogFilter($database, $input);
+        $whereSql = $filter['where_sql'];
+        $parameters = $filter['parameters'];
+        $total = $filter['total'];
+        $pagination = Pagination::make($total, $input, 'page', 'per_page', 20);
+        $limit = $allRows ? max(1, $total) : $pagination['page_size'];
+        $offset = $allRows ? 0 : $pagination['offset'];
+        $query = 'SELECT id, user_id, actor_label, action, entity_type, entity_id, outcome, severity, ip_address, created_at FROM audit_logs WHERE ' . $whereSql . ' ORDER BY created_at DESC, id DESC LIMIT ' . $limit . ' OFFSET ' . $offset;
+        $statement = $database->prepare($query);
+        $statement->execute($parameters);
+
+        return ['rows' => $statement->fetchAll(), 'pagination' => $pagination, 'filters' => $filter['filters']];
+    }
+
+    private static function auditLogFilter(PDO $database, array $input): array
     {
         $where = ['1 = 1'];
         $parameters = [];
         foreach (['outcome' => 'outcome', 'action' => 'action', 'entity_type' => 'entity_type'] as $key => $column) {
             $value = trim((string) ($input[$key] ?? ''));
-            if ($value !== '' && preg_match('/^[a-zA-Z0-9_.-]{1,100}$/', $value)) {
+            if ($value !== '' && !preg_match('/^[a-zA-Z0-9_.-]{1,100}$/', $value)) {
+                throw new DomainException('Choose a valid audit log filter.');
+            }
+            if ($key === 'outcome' && $value !== '' && !in_array($value, ['success', 'failure', 'warning'], true)) {
+                throw new DomainException('Choose a valid audit outcome.');
+            }
+            if ($value !== '') {
                 $where[] = $column . ' = :' . $key;
                 $parameters[$key] = $value;
             }
         }
         $actor = trim((string) ($input['actor'] ?? ''));
-        if ($actor !== '' && mb_strlen($actor) <= 160) {
+        if (mb_strlen($actor) > 160) throw new DomainException('Keep audit actor search under 160 characters.');
+        if ($actor !== '') {
             $where[] = 'actor_label LIKE :actor';
             $parameters['actor'] = '%' . $actor . '%';
         }
         $search = trim((string) ($input['q'] ?? ''));
-        if ($search !== '' && mb_strlen($search) <= 160) {
+        if (mb_strlen($search) > 160) throw new DomainException('Keep audit search under 160 characters.');
+        if ($search !== '') {
             $where[] = '(actor_label LIKE :search_actor OR action LIKE :search_action OR COALESCE(entity_type, \'\') LIKE :search_entity)';
             $searchLike = '%' . $search . '%';
             $parameters['search_actor'] = $searchLike;
@@ -442,12 +466,98 @@ final class StaffService
         $count = $database->prepare('SELECT COUNT(*) FROM audit_logs WHERE ' . $whereSql);
         $count->execute($parameters);
         $total = (int) $count->fetchColumn();
-        $pagination = Pagination::make($total, $input, 'page', 'per_page', 20);
-        $query = 'SELECT id, user_id, actor_label, action, entity_type, entity_id, outcome, severity, ip_address, created_at FROM audit_logs WHERE ' . $whereSql . ' ORDER BY created_at DESC, id DESC LIMIT ' . $pagination['page_size'] . ' OFFSET ' . $pagination['offset'];
-        $statement = $database->prepare($query);
-        $statement->execute($parameters);
 
-        return ['rows' => $statement->fetchAll(), 'pagination' => $pagination, 'filters' => $input];
+        $filters = [
+            'q' => $search,
+            'outcome' => trim((string) ($input['outcome'] ?? '')),
+            'actor' => $actor,
+            'action' => trim((string) ($input['action'] ?? '')),
+            'entity_type' => trim((string) ($input['entity_type'] ?? '')),
+            'start_date' => $dateFilters['start_date'] ?? '',
+            'end_date' => $dateFilters['end_date'] ?? '',
+            'date_range' => (string) ($input['date_range'] ?? ''),
+        ];
+
+        return ['where_sql' => $whereSql, 'parameters' => $parameters, 'total' => $total, 'filters' => $filters];
+    }
+
+    public static function auditLogExport(PDO $database, array $user, array $input): array
+    {
+        if (($user['role'] ?? '') !== 'admin') {
+            throw new DomainException('Administrator access is required to export the audit log.');
+        }
+        $output = fopen('php://temp/maxmemory:2097152', 'w+b');
+        if ($output === false) throw new RuntimeException('Could not prepare the audit export.');
+
+        fwrite($output, "\xEF\xBB\xBF");
+        fputcsv($output, ['Timestamp (UTC)', 'User ID', 'Actor', 'Action', 'Target entity', 'Target ID', 'IP Address', 'Outcome', 'Severity'], ',', '"', '');
+        $filter = self::auditLogFilter($database, $input);
+        $maximumId = (int) $database->query('SELECT COALESCE(MAX(id), 0) FROM audit_logs')->fetchColumn();
+        $whereSql = $filter['where_sql'] . ' AND id <= :maximum_id';
+        $parameters = $filter['parameters'] + ['maximum_id' => $maximumId];
+        $lastCreatedAt = null;
+        $lastId = null;
+        $rowCount = 0;
+        $batchSize = 500;
+        do {
+            $batchWhere = $whereSql;
+            $batchParameters = $parameters;
+            if ($lastCreatedAt !== null && $lastId !== null) {
+                $batchWhere .= ' AND (created_at < :cursor_before OR (created_at = :cursor_equal AND id < :cursor_id))';
+                $batchParameters['cursor_before'] = $lastCreatedAt;
+                $batchParameters['cursor_equal'] = $lastCreatedAt;
+                $batchParameters['cursor_id'] = $lastId;
+            }
+            $statement = $database->prepare('SELECT id, user_id, actor_label, action, entity_type, entity_id, outcome, severity, ip_address, created_at FROM audit_logs WHERE ' . $batchWhere . ' ORDER BY created_at DESC, id DESC LIMIT ' . $batchSize);
+            $statement->execute($batchParameters);
+            $batchCount = 0;
+            while ($row = $statement->fetch()) {
+                $values = [
+                    $row['created_at'],
+                    $row['user_id'],
+                    $row['actor_label'],
+                    $row['action'],
+                    $row['entity_type'],
+                    $row['entity_id'],
+                    $row['ip_address'],
+                    $row['outcome'],
+                    $row['severity'],
+                ];
+                fputcsv($output, array_map([self::class, 'safeCsvCell'], $values), ',', '"', '');
+                $lastCreatedAt = (string) $row['created_at'];
+                $lastId = (int) $row['id'];
+                $rowCount++;
+                $batchCount++;
+            }
+            $statement->closeCursor();
+        } while ($batchCount === $batchSize);
+
+        if (rewind($output) === false) {
+            fclose($output);
+            throw new RuntimeException('Could not prepare the audit export stream.');
+        }
+
+        return ['stream' => $output, 'row_count' => $rowCount, 'filters' => $filter['filters']];
+    }
+
+    public static function recordAuditExport(PDO $database, array $user): void
+    {
+        if (($user['role'] ?? '') !== 'admin') {
+            throw new DomainException('Administrator access is required to export the audit log.');
+        }
+        $statement = $database->prepare('INSERT INTO audit_logs (user_id, actor_label, action, entity_type, outcome, severity, ip_address) VALUES (:user_id, :actor, \'audit.exported\', \'audit_log\', \'success\', \'notice\', :ip)');
+        $statement->execute([
+            'user_id' => $user['id'],
+            'actor' => mb_substr((string) ($user['full_name'] ?? 'Administrator'), 0, 160),
+            'ip' => request_ip(),
+        ]);
+    }
+
+    private static function safeCsvCell(mixed $value): string
+    {
+        $cell = (string) ($value ?? '');
+        // Prefix spreadsheet formula markers, including markers preceded by ASCII controls or Unicode separators.
+        return preg_match('/^[\x00-\x20\p{Z}]*[=+\-@]/u', $cell) ? "'" . $cell : $cell;
     }
 
     public static function recordReportExport(PDO $database, array $user, array $filters, int $rowCount): void

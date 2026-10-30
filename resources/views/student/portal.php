@@ -192,16 +192,16 @@ $firstName = explode(' ', trim($user['full_name']))[0] ?? 'Student';
 
 <?php if ($printableApplication !== null): ?>
     <?php foreach ([
-        ['type' => 'summary', 'id' => 'applicationSummaryModal', 'title' => 'Application summary', 'available' => true, 'printUrl' => '/application/print'],
-        ['type' => 'acceptance', 'id' => 'acceptanceLetterModal', 'title' => 'Acceptance letter', 'available' => ApplicationService::canPrintAcceptance($printableApplication), 'printUrl' => '/application/acceptance-letter'],
-        ['type' => 'enrollment', 'id' => 'enrollmentConfirmationModal', 'title' => 'Enrollment confirmation', 'available' => ApplicationService::canPrintEnrollment($printableApplication), 'printUrl' => '/application/enrollment-confirmation'],
+        ['type' => 'summary', 'id' => 'applicationSummaryModal', 'title' => 'Application summary', 'available' => true],
+        ['type' => 'acceptance', 'id' => 'acceptanceLetterModal', 'title' => 'Acceptance letter', 'available' => ApplicationService::canPrintAcceptance($printableApplication)],
+        ['type' => 'enrollment', 'id' => 'enrollmentConfirmationModal', 'title' => 'Enrollment confirmation', 'available' => ApplicationService::canPrintEnrollment($printableApplication)],
     ] as $documentModal): ?>
         <?php if ($documentModal['available']): $documentType = $documentModal['type']; $documentTitle = $documentModal['title']; $application = $printableApplication; $applicant = $printableApplication['applicant'] ?? []; $dateLabel = static fn (?string $date): string => $date === null || $date === '' ? 'Not recorded' : (new DateTimeImmutable($date, new DateTimeZone('UTC')))->setTimezone(new DateTimeZone('Asia/Manila'))->format('F j, Y'); ?>
             <div class="modal fade document-preview-modal" id="<?= e($documentModal['id']) ?>" tabindex="-1" aria-labelledby="<?= e($documentModal['id']) ?>Title" aria-hidden="true">
                 <div class="modal-dialog modal-dialog-centered modal-lg modal-dialog-scrollable"><div class="modal-content">
                     <div class="modal-header"><div><p class="eyebrow">Student portal · Generated document</p><h2 class="modal-title" id="<?= e($documentModal['id']) ?>Title"><?= e($documentTitle) ?></h2></div><button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close <?= e(strtolower($documentTitle)) ?> preview"></button></div>
                     <div class="modal-body"><?php require __DIR__ . '/print-document-content.php'; ?></div>
-                    <div class="modal-footer"><a class="btn btn-outline-navy" href="<?= e($documentModal['printUrl']) ?>" target="_blank" rel="noopener"><i class="bi bi-box-arrow-up-right" aria-hidden="true"></i> Open print view</a><button type="button" class="btn btn-navy" data-bs-dismiss="modal">Close</button></div>
+                    <div class="modal-footer"><button type="button" class="btn btn-navy" data-print><i class="bi bi-printer" aria-hidden="true"></i> Print <?= e($documentTitle) ?></button><button type="button" class="btn btn-outline-navy" data-bs-dismiss="modal">Close</button></div>
                 </div></div>
             </div>
         <?php endif; ?>

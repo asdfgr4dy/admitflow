@@ -100,8 +100,8 @@ final class PasswordResetService
             $markUsed->execute(['used_at' => $now, 'id' => $reset['id']]);
             $invalidateOther = $database->prepare('UPDATE password_reset_tokens SET used_at = :used_at WHERE user_id = :user_id AND id <> :id AND used_at IS NULL');
             $invalidateOther->execute(['used_at' => $now, 'user_id' => $reset['user_id'], 'id' => $reset['id']]);
-            $audit = $database->prepare('INSERT INTO audit_logs (user_id, actor_label, action, entity_type, entity_id, outcome, severity) SELECT id, full_name, \'auth.password_reset\', \'user\', id, \'success\', \'notice\' FROM users WHERE id = :user_id');
-            $audit->execute(['user_id' => $reset['user_id']]);
+            $audit = $database->prepare('INSERT INTO audit_logs (user_id, actor_label, action, entity_type, entity_id, outcome, severity, ip_address) SELECT id, full_name, \'auth.password_reset\', \'user\', id, \'success\', \'notice\', :ip FROM users WHERE id = :user_id');
+            $audit->execute(['user_id' => $reset['user_id'], 'ip' => request_ip()]);
             $database->commit();
 
             return ['ok' => true, 'message' => 'Your password has been changed. Sign in with the new password.'];

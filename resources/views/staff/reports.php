@@ -9,7 +9,7 @@ foreach ($report['rows'] as $row) {
 }
 ?>
 <section class="staff-wrap container-xl print-report staff-reports-page">
-    <div class="staff-heading no-print"><div><p class="eyebrow">Admission Office · Reporting</p><h1>Reports and print center.</h1><p>Reports include only the records your staff role can access.</p></div><div class="d-flex gap-2"><button type="button" class="btn btn-outline-navy" data-print><i class="bi bi-printer" aria-hidden="true"></i> Print preview</button><a href="/staff" class="btn btn-outline-navy">Back to dashboard</a></div></div>
+    <div class="staff-heading no-print"><div><p class="eyebrow">Admission Office · Reporting</p><h1>Reports and print center.</h1><p>Reports include only the records your staff role can access.</p></div><div class="d-flex gap-2"><button type="button" class="btn btn-outline-navy" data-print><i class="bi bi-printer" aria-hidden="true"></i> Print</button><a href="/staff" class="btn btn-outline-navy">Back to dashboard</a></div></div>
     <div class="report-print-heading"><p>AdmitFlow · Admission Office</p><h1>Application summary report</h1><p>Generated <?= e(date('F j, Y g:i A')) ?> Asia/Manila · <?= number_format($report['total']) ?> matching records</p><?php if ($report['truncated']): ?><p class="alert alert-warning">The report is limited to the first 5,000 matching records. Narrow the filters for a complete smaller report.</p><?php endif; ?></div>
     <form method="get" action="/staff/reports" class="filter-bar no-print" data-auto-filter-form data-filter-target="report-results">
         <input type="hidden" name="per_page" value="<?= (int) ($report['pagination']['page_size'] ?? 20) ?>">

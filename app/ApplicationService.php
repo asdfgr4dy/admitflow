@@ -548,12 +548,13 @@ final class ApplicationService
     private static function audit(PDO $database, int $studentId, string $action, string $entityType, int $entityId): void
     {
         $statement = $database->prepare(
-            'INSERT INTO audit_logs (user_id, actor_label, action, entity_type, entity_id, outcome, severity) SELECT id, full_name, :action, :entity_type, :entity_id, \'success\', \'info\' FROM users WHERE id = :user_id'
+            'INSERT INTO audit_logs (user_id, actor_label, action, entity_type, entity_id, outcome, severity, ip_address) SELECT id, full_name, :action, :entity_type, :entity_id, \'success\', \'info\', :ip FROM users WHERE id = :user_id'
         );
         $statement->execute([
             'action' => $action,
             'entity_type' => $entityType,
             'entity_id' => $entityId,
+            'ip' => request_ip(),
             'user_id' => $studentId,
         ]);
     }

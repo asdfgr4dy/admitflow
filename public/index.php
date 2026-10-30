@@ -8,6 +8,7 @@ require dirname(__DIR__) . '/app/AnnouncementService.php';
 require dirname(__DIR__) . '/app/Pagination.php';
 require dirname(__DIR__) . '/app/StaffService.php';
 require dirname(__DIR__) . '/app/PasswordResetService.php';
+require dirname(__DIR__) . '/app/BackupIntegrity.php';
 require dirname(__DIR__) . '/app/BackupService.php';
 require dirname(__DIR__) . '/app/NotificationService.php';
 require dirname(__DIR__) . '/app/AccountSettingsService.php';
@@ -500,16 +501,67 @@ try {
                     if ($user['role'] !== 'admin') {
                         throw new DomainException('Administrator access is required to create backups.');
                     }
+                    $backupContext = [
+                        'request_id' => bin2hex(random_bytes(12)),
+                        'type' => $path === '/staff/backup/database' ? 'database' : 'files',
+                        'stage' => 'request-authorized',
+                        'started_at' => gmdate(DATE_ATOM),
+                        'started_clock' => microtime(true),
+                        'output_committed' => false,
+                    ];
+                    $GLOBALS['admitflow_backup_context'] = $backupContext;
+                    BackupService::logRequestEvent($backupContext + ['event' => 'started']);
+                    register_shutdown_function(static function (): void {
+                        $fatal = error_get_last();
+                        $context = $GLOBALS['admitflow_backup_context'] ?? null;
+                        if (!is_array($context)) return;
+                        if (is_array($fatal) && in_array($fatal['type'], [E_ERROR, E_PARSE, E_CORE_ERROR, E_COMPILE_ERROR, E_USER_ERROR], true)) {
+                            BackupService::logRequestEvent($context + [
+                                'event' => 'fatal',
+                                'elapsed_seconds' => (int) (microtime(true) - $context['started_clock']),
+                                'fatal_type' => $fatal['type'],
+                                'fatal_line' => (int) ($fatal['line'] ?? 0),
+                            ]);
+                            if (empty($context['output_committed']) && isset($context['output_path']) && is_string($context['output_path'])) {
+                                $backupRoot = realpath(dirname(__DIR__) . '/storage/backups');
+                                $outputPath = $context['output_path'];
+                                $outputDirectory = realpath(dirname($outputPath));
+                                $expectedPrefix = $context['type'] === 'files' ? 'files-' : 'database-';
+                                if ($backupRoot !== false && $outputDirectory === $backupRoot
+                                    && preg_match('/^' . preg_quote($expectedPrefix, '/') . '\\d{8}-\\d{6}-[a-f0-9]{12}\\.(?:tar|sql)$/', basename($outputPath))
+                                    && is_file($outputPath)) {
+                                    $removed = @unlink($outputPath);
+                                    BackupService::logRequestEvent($context + ['event' => $removed ? 'fatal-output-cleaned' : 'fatal-output-cleanup-failed']);
+                                }
+                            }
+                            return;
+                        }
+                        $context['stage'] = 'request-finished';
+                    });
                     try {
+                        $GLOBALS['admitflow_backup_context']['stage'] = 'service-call';
                         if ($path === '/staff/backup/database') {
                             BackupService::createDatabase($database, $user);
                         } else {
                             BackupService::createFiles($database, $user);
                         }
+                        $GLOBALS['admitflow_backup_context']['stage'] = 'service-completed';
+                        BackupService::logRequestEvent($GLOBALS['admitflow_backup_context'] + [
+                            'event' => 'completed',
+                            'elapsed_seconds' => (int) (microtime(true) - $backupContext['started_clock']),
+                        ]);
                         flash('success', 'Backup created and verified.');
                     } catch (Throwable $error) {
-                        error_log('[admitflow backup] operation failed (' . $error::class . ').');
+                        $failureContext = $GLOBALS['admitflow_backup_context'] ?? $backupContext;
+                        BackupService::logRequestEvent($failureContext + [
+                            'event' => 'failed',
+                            'elapsed_seconds' => (int) (microtime(true) - $failureContext['started_clock']),
+                            'exception_class' => $error::class,
+                            'diagnostic' => $error->getMessage(),
+                        ]);
                         flash('warning', 'Backup did not complete or could not be verified. No successful backup is recorded.');
+                    } finally {
+                        unset($GLOBALS['admitflow_backup_context']);
                     }
                     redirect('/staff/backups');
                 }
@@ -519,6 +571,22 @@ try {
                     }
                     $verified = BackupService::verify($database, $user, (int) ($_POST['backup_id'] ?? 0));
                     flash($verified ? 'success' : 'warning', $verified ? 'Backup checksum and structure verified.' : 'Backup verification failed. Do not restore this file.');
+                    redirect('/staff/backups');
+                }
+                if ($path === '/staff/backup/restore') {
+                    if ($user['role'] !== 'admin') {
+                        throw new DomainException('Administrator access is required to restore database backups.');
+                    }
+                    $backupId = (int) ($_POST['backup_id'] ?? 0);
+                    try {
+                        $safetyBackupId = BackupService::restoreDatabase($database, $user, $backupId, (string) ($_POST['confirmation'] ?? ''));
+                        flash('success', 'Database backup restored. Safety backup #' . $safetyBackupId . ' is retained in backup history.');
+                    } catch (DomainException $error) {
+                        throw $error;
+                    } catch (Throwable $error) {
+                        error_log('[admitflow backup] Database restore failed (' . $error::class . ').');
+                        flash('warning', 'Restore could not be completed. Review the server log and the verified safety backup before attempting recovery.');
+                    }
                     redirect('/staff/backups');
                 }
                 if ($path === '/staff/reports.csv') {
@@ -547,6 +615,59 @@ try {
                     header('Content-Disposition: attachment; filename="admitflow-applications-' . date('Y-m-d') . '.csv"');
                     fpassthru($output);
                     fclose($output);
+                    exit;
+                }
+                if ($path === '/staff/audit.csv') {
+                    $user = current_user();
+                    if ($user === null) {
+                        redirect('/login');
+                    }
+                    if ($user['role'] !== 'admin') {
+                        http_response_code(403);
+                        header('Content-Type: text/plain; charset=utf-8');
+                        exit('Administrator access is required.');
+                    }
+                    ini_set('display_errors', '0');
+                    try {
+                        $export = StaffService::auditLogExport($database, $user, $_POST);
+                    } catch (DomainException $error) {
+                        http_response_code(422);
+                        header('Content-Type: text/plain; charset=utf-8');
+                        exit($error->getMessage());
+                    } catch (Throwable $error) {
+                        error_log('[admitflow audit export] preparation failed (' . $error::class . ').');
+                        http_response_code(500);
+                        header('Content-Type: text/plain; charset=utf-8');
+                        exit('The audit export could not be prepared.');
+                    }
+                    try {
+                        StaffService::recordAuditExport($database, $user);
+                    } catch (Throwable $error) {
+                        if (is_resource($export['stream'])) fclose($export['stream']);
+                        error_log('[admitflow audit export] completion event could not be recorded (' . $error::class . ').');
+                        http_response_code(500);
+                        header('Content-Type: text/plain; charset=utf-8');
+                        exit('The audit export could not be completed.');
+                    }
+                    $startDate = $export['filters']['start_date'];
+                    $endDate = $export['filters']['end_date'];
+                    $dateSuffix = $startDate !== '' && $endDate !== ''
+                        ? $startDate . '-to-' . $endDate
+                        : ($startDate !== '' ? 'from-' . $startDate : ($endDate !== '' ? 'through-' . $endDate : date('Y-m-d')));
+                    $filename = 'admitflow-audit-log-' . $dateSuffix . '.csv';
+                    while (ob_get_level() > 0) {
+                        ob_end_clean();
+                    }
+                    $streamMetadata = fstat($export['stream']);
+                    header('Content-Type: text/csv; charset=UTF-8');
+                    header('X-Content-Type-Options: nosniff');
+                    header('Cache-Control: no-store, private');
+                    if (is_array($streamMetadata) && isset($streamMetadata['size'])) {
+                        header('Content-Length: ' . (int) $streamMetadata['size']);
+                    }
+                    header('Content-Disposition: attachment; filename="' . $filename . '"');
+                    fpassthru($export['stream']);
+                    fclose($export['stream']);
                     exit;
                 }
                 if ($path === '/staff/document/review') {
@@ -627,6 +748,9 @@ try {
                 }
                 if ($path === '/staff/user/save') {
                     redirect('/staff/users');
+                }
+                if ($path === '/staff/backup/restore') {
+                    redirect('/staff/backups');
                 }
                 $applicationId = (int) ($_POST['application_id'] ?? 0);
                 if ($applicationId > 0 && in_array($path, ['/staff/interview/save', '/staff/interview/reschedule', '/staff/interview/update', '/staff/enrollment/checklist'], true)) {

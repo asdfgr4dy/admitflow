@@ -553,8 +553,8 @@ h1 em, h2 em { color: #8B5C15; font-style: italic; }
 .staff-section .section-heading h2 { color: #16334A; font-family: var(--sans); font-size: 1.6rem; font-weight: 800; }
 .staff-section .section-count { border-color: #6FA58D; color: #084884; }
 .filter-bar { gap: 12px; margin-bottom: 16px; padding: 0; border: 0; border-radius: 0; background: transparent; box-shadow: none; }
-.password-history-card .filter-bar { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
-.password-history-card .filter-bar > .search-field, .password-history-card .filter-bar > .filter-actions { grid-column: 1 / -1; }
+.password-history-card .filter-bar { grid-template-columns: minmax(0, 1.5fr) minmax(120px, .75fr) auto; align-items: end; }
+.password-history-card .filter-bar > .filter-actions { align-self: end; }
 .filter-field label { color: #405966; font-size: .75rem; }
 .filter-field .form-control, .filter-field .form-select { border-color: #CAD8D1; border-radius: 5px; }
 .filter-field .form-control:focus, .filter-field .form-select:focus, .review-form .form-control:focus, .review-form .form-select:focus { border-color: #084884; box-shadow: 0 0 0 .2rem rgba(8,72,132,.15); }
@@ -635,7 +635,12 @@ h1 em, h2 em { color: #8B5C15; font-style: italic; }
 .admin-backups-page .restore-warning { padding: 20px; border: 1px solid #E8C8A5; border-radius: 7px; background: #FFF8ED; }
 .admin-backups-page .restore-warning .eyebrow { color: #8E572C; }
 .admin-backups-page .restore-warning h2 { color: #513D2D; font-family: var(--sans); font-size: 1.25rem; font-weight: 800; }
+.admin-backups-page .backup-restore-form { display: grid; min-width: 132px; gap: 5px; }
+.admin-backups-page .backup-restore-form .form-control { min-width: 0; }
+.admin-backups-page .backup-restore-form .btn { justify-self: start; }
 .admin-audit-page .filter-bar { grid-template-columns: minmax(220px,1.6fr) repeat(3,minmax(135px,.8fr)) auto; }
+.admin-audit-page .audit-filter-actions { flex-wrap: nowrap; align-items: center; }
+.admin-audit-page .audit-filter-actions .btn { display: inline-flex; flex: 0 0 auto; align-items: center; justify-content: center; gap: 6px; white-space: nowrap; }
 .admin-audit-page .staff-table td:nth-child(2) { color: #16334A; font-weight: 700; }
 .admin-audit-page .staff-table td:nth-child(6) { color: #526773; font-variant-numeric: tabular-nums; }
 .detail-back { margin-bottom: 20px; }
@@ -814,7 +819,8 @@ h1 em, h2 em { color: #8B5C15; font-style: italic; }
 .security-settings-page .security-flash { width: min(100%, 1160px); margin: 0 auto 16px; }
 .security-settings-grid { display: grid; grid-template-columns: minmax(0,1.12fr) minmax(340px,.88fr); align-items: start; gap: 16px; }
 .security-settings-page .profile-settings-panel { min-width: 0; margin: 0; padding: 22px; border-color: #DCE4E8; border-radius: 8px; box-shadow: 0 5px 18px rgba(22,51,74,.045); }
-.security-support-column { display: grid; min-width: 0; gap: 16px; }
+.security-support-column { display: contents; }
+.security-settings-grid .password-history-card { grid-column: 1 / -1; }
 .security-card-heading { display: flex; align-items: center; gap: 12px; margin-bottom: 18px; }
 .security-card-heading > div { min-width: 0; }
 .security-heading-icon { display: grid; width: 44px; height: 44px; flex: 0 0 44px; place-items: center; border-radius: 6px; background: #EAF2EE; color: #39775F; font-size: 1.2rem; }
@@ -1197,7 +1203,10 @@ img.document-preview-media { width: auto; max-width: 100%; height: auto; max-hei
     .metric-grid strong { font-size: 1.7rem; }
     .filter-bar { grid-template-columns: 1fr 1fr; }
     .admin-audit-page .filter-bar { grid-template-columns: 1fr 1fr; }
+    .admin-audit-page .audit-filter-actions { grid-column: 1 / -1; }
     .filter-field.search-field { grid-column: 1 / -1; }
+    .password-history-card .filter-bar { grid-template-columns: minmax(0, 1fr) minmax(0, .8fr) auto; gap: 7px; }
+    .password-history-card .filter-bar > .search-field, .password-history-card .filter-bar > .filter-actions { grid-column: auto; }
     .application-primary-filters { grid-template-columns: repeat(2, minmax(0, 1fr)); }
     .application-primary-filters .search-field, .application-primary-actions { grid-column: 1 / -1; }
     .application-primary-actions { justify-content: flex-start; flex-wrap: wrap; }
@@ -1259,6 +1268,7 @@ img.document-preview-media { width: auto; max-width: 100%; height: auto; max-hei
     .staff-reports-page .report-summary { grid-template-columns: repeat(3,minmax(0,1fr)); }
     .staff-reports-page .filter-bar { grid-template-columns: repeat(3,minmax(0,1fr)); }
     .admin-audit-page .filter-bar { grid-template-columns: repeat(3,minmax(0,1fr)); }
+    .admin-audit-page .audit-filter-actions { grid-column: 1 / -1; }
     .staff-review-page .detail-grid { grid-template-columns: 1fr; }
     .staff-review-page .detail-side { grid-template-columns: repeat(2,minmax(0,1fr)); align-items: start; }
     .admin-settings-page .settings-year-form, .admin-settings-page .settings-year-record { grid-template-columns: repeat(3,minmax(0,1fr)); }
@@ -1301,11 +1311,17 @@ img.document-preview-media { width: auto; max-width: 100%; height: auto; max-hei
 
 @page { size: A4; margin: 14mm; }
 
+@page { @bottom-center { content: "AdmitFlow · Admission Office — Page " counter(page) " of " counter(pages); font-family: Georgia, 'Times New Roman', serif; font-size: 8pt; color: #444; } }
+
 @media print {
     body, body.authenticated-layout { background: #fff !important; color: #111 !important; font-family: Georgia, 'Times New Roman', serif; font-size: 10pt; }
-    .site-header, .site-footer, .app-sidebar, .app-sidebar-backdrop, .app-topbar, .app-footer, .app-flash, .no-print, .staff-nav, .staff-heading, .filter-bar, .report-actions { display: none !important; }
+    .site-header, .site-footer, .app-sidebar, .app-sidebar-backdrop, .app-topbar, .app-footer, .app-flash, .no-print, .staff-nav, .staff-heading, .filter-bar, .report-actions, .student-print-actions, .document-print-actions { display: none !important; }
     .app-shell, .app-main, .app-content { display: block !important; width: auto !important; min-width: 0 !important; min-height: 0 !important; margin: 0 !important; padding: 0 !important; overflow: visible !important; }
-    .staff-wrap, .portal-wrap, .application-shell { max-width: none !important; margin: 0 !important; padding: 0 !important; }
+    .staff-wrap, .application-shell { max-width: none !important; margin: 0 !important; padding: 0 !important; }
+    .portal-wrap { display: none !important; }
+    .admitflow-toast-container, .pagination-bar { display: none !important; }
+    .modal-backdrop { display: none !important; }
+    body { overflow: visible !important; }
     .report-print-heading { display: block; margin-bottom: 18px; }
     .report-print-heading p { margin-bottom: 4px; color: #444; font-size: 9pt; }
     .report-print-heading h1 { margin-bottom: 5px; color: #173247; font-size: 20pt; }
@@ -1318,7 +1334,9 @@ img.document-preview-media { width: auto; max-width: 100%; height: auto; max-hei
     .staff-table th, .staff-table td { padding: 5px; border-color: #bbb !important; color: #111 !important; }
     .staff-table th { background: #e9eef1 !important; color: #173247 !important; }
     .staff-table a { color: #111; text-decoration: none; }
-    .document-print-page { max-width: 180mm; margin: 0 auto; color: #111; }
+    .staff-table th:nth-child(6), .staff-table td:nth-child(6) { text-align: right; }
+    .document-print-page { display: block !important; max-width: 180mm !important; margin: 0 auto !important; color: #111 !important; padding: 0 !important; }
+    .document-print-page, .document-print-page h1, .document-print-page h2, .document-print-page p, .document-print-page dt, .document-print-page dd, .document-print-page th, .document-print-page td, .document-print-page strong { background: #fff !important; color: #111 !important; }
     .document-print-header { margin-bottom: 12mm; padding-bottom: 5mm; border-bottom: 2px solid #173247; }
     .document-print-header p { margin: 0; color: #173247; font-size: 10pt; font-weight: bold; }
     .document-print-header h1 { margin: 2mm 0 0; color: #173247; font-size: 21pt; }
@@ -1335,6 +1353,47 @@ img.document-preview-media { width: auto; max-width: 100%; height: auto; max-hei
     .document-print-signoff { margin-top: 14mm; break-inside: avoid; page-break-inside: avoid; }
     .document-print-signoff p { margin-bottom: 2mm; }
     .report-summary article { break-inside: avoid; page-break-inside: avoid; box-shadow: none !important; }
+    /* Ensure document prints regardless of Bootstrap .show class */
+.document-preview-modal .document-print-page { display: block !important; }
+.document-preview-modal .document-print-header { display: block !important; }
+.document-preview-modal .document-print-section { display: block !important; }
+.document-preview-modal .document-print-details { display: block !important; }
+.document-preview-modal .document-print-table { display: block !important; }
+.document-preview-modal .document-print-signoff { display: block !important; }
+    .document-preview-modal.show {
+        display: block !important;
+        position: static !important;
+        overflow: visible !important;
+    }
+    .document-preview-modal.show .modal-dialog {
+        display: block !important;
+        width: auto !important;
+        max-width: none !important;
+        margin: 0 !important;
+    }
+    .document-preview-modal.show .modal-content {
+        display: block !important;
+        border: none !important;
+        box-shadow: none !important;
+        border-radius: 0 !important;
+        width: auto !important;
+        max-width: none !important;
+        height: auto !important;
+        min-height: auto !important;
+        background: transparent !important;
+    }
+    .document-preview-modal.show .modal-header,
+    .document-preview-modal.show .modal-footer,
+    .document-preview-modal.show .btn-close,
+    .modal-backdrop {
+        display: none !important;
+    }
+    .document-preview-modal.show .modal-body {
+        display: block !important;
+        padding: 0 !important;
+        background: #fff !important;
+        overflow: visible !important;
+    }
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -1353,20 +1412,11 @@ img.document-preview-media { width: auto; max-width: 100%; height: auto; max-hei
 .password-strength li.is-met { color: #315C47; }
 .password-strength li.is-met::before { color: #39775F; content: '✓'; }
 
-@media print {
-    .admitflow-toast-container, .pagination-bar { display: none !important; }
-    .staff-reports-page .report-summary { grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 0; margin: 8px 0; border: 0; }
-    .staff-reports-page .report-summary article { padding: 5px; border: 1px solid #bbb; border-radius: 0; background: #fff !important; }
-    .staff-reports-page .report-summary span { color: #444; font-size: 7pt; }
-    .staff-reports-page .report-summary strong { color: #173247; font-family: Georgia, 'Times New Roman', serif; font-size: 11pt; font-weight: bold; }
-    .staff-table th:nth-child(6), .staff-table td:nth-child(6) { text-align: right; }
-    .document-print-page, .document-print-page :is(h1, h2, p, dt, dd, th, td, strong) { background: #fff !important; color: #111 !important; }
-}
+
 
 @media (max-width: 767.98px) {
     .security-settings-page { padding: 28px 16px 42px; }
     .security-settings-grid { grid-template-columns: 1fr; gap: 12px; }
-    .security-support-column { gap: 12px; }
     .security-settings-page .profile-settings-panel { padding: 17px; }
     .security-form-actions { align-items: stretch; flex-direction: column; }
     .security-form-actions > .btn { width: 100%; }
