@@ -42,7 +42,7 @@ if ($path === '/staff/reports.csv') {
     exit;
 }
 if ($path === '/staff/reports.pdf') {
-    $bytes = ReportExport::pdf($report, StaffService::filters($database, $user));
+    $bytes = ReportExport::pdf($report, StaffService::filters($database, $user), $user, false, (string) ($_POST['orientation'] ?? 'landscape'));
     StaffService::recordReportExport($database, $user, $_POST, count($report['rows']));
     header('Content-Type: application/pdf');
     header('Content-Length: ' . strlen($bytes));

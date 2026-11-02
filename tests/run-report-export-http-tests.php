@@ -80,6 +80,11 @@ try {
         foreach ($response['headers'] as $header) if (preg_match('/^HTTP\/\S+\s+(\d+)/', $header, $match)) return (int) $match[1];
         return 0;
     };
+    $pdfPageSize = static function (string $bytes): array {
+        $match = [];
+        preg_match('/MediaBox\s+\[0(?:\.000)?\s+0(?:\.000)?\s+([\d.]+)\s+([\d.]+)\]/', $bytes, $match);
+        return [(float) ($match[1] ?? 0), (float) ($match[2] ?? 0)];
+    };
 
     $database = $fetchDatabase();
     StaffService::archiveApplication($database, ['id' => 1, 'full_name' => 'HTTP Fixture Admin', 'role' => 'admin'], 2);
@@ -87,12 +92,24 @@ try {
     $csv = $post('/staff/reports.csv');
     $pdf = $post('/staff/reports.pdf');
     $assert($status($csv) === 200 && str_contains(implode("\n", $csv['headers']), 'text/csv') && str_contains($csv['body'], 'AF-HTTP-ACTIVE') && !str_contains($csv['body'], 'AF-HTTP-ARCHIVED'), 'HTTP CSV uses the report export route and excludes archived rows while retaining active rows');
-    $assert($status($pdf) === 200 && str_starts_with($pdf['body'], '%PDF-') && str_contains(implode("\n", $pdf['headers']), 'application/pdf'), 'HTTP PDF uses the report export route and produces an actual PDF response');
+    $assert($status($pdf) === 200 && str_starts_with($pdf['body'], '%PDF-') && str_contains(implode("\n", $pdf['headers']), 'application/pdf'), 'HTTP PDF response: ' . json_encode(['status' => $status($pdf), 'body' => substr($pdf['body'], 0, 500), 'headers' => $pdf['headers'] ]));
     $activeReport = StaffService::applications($fetchDatabase(), ['id' => 1, 'role' => 'admin'], [], true);
     $pdfBytes = ReportExport::pdf($activeReport, StaffService::filters($fetchDatabase(), ['id' => 1, 'role' => 'admin']));
     $assert(!str_contains($csv['body'], 'RESIDENTIAL SECRET') && !str_contains($pdfBytes, 'RESIDENTIAL SECRET') && !str_contains($csv['body'], '2000-01-01') && !str_contains($pdfBytes, '2000-01-01'), 'CSV and PDF outputs exclude residential addresses and dates of birth');
     $auditCounts = $fetchDatabase()->query("SELECT action, COUNT(*) AS total FROM audit_logs WHERE action='report.exported' GROUP BY action")->fetchAll();
     $assert((int) ($auditCounts[0]['total'] ?? 0) === 2, 'CSV and PDF HTTP exports each write exactly one report.exported audit row');
+
+    $portraitPdf = $post('/staff/reports.pdf', ['orientation' => 'portrait']);
+    $landscapePdf = $post('/staff/reports.pdf', ['orientation' => 'landscape']);
+    $invalidOrientationPdf = $post('/staff/reports.pdf', ['orientation' => 'sideways']);
+    $portraitSize = $pdfPageSize($portraitPdf['body']);
+    $landscapeSize = $pdfPageSize($landscapePdf['body']);
+    $invalidSize = $pdfPageSize($invalidOrientationPdf['body']);
+    $assert($status($portraitPdf) === 200 && $portraitSize[1] > $portraitSize[0] && abs($portraitSize[0] - 595.28) < 1 && abs($portraitSize[1] - 841.89) < 1, 'HTTP PDF export orientation=portrait produces an A4 portrait MediaBox');
+    $assert($status($landscapePdf) === 200 && $landscapeSize[0] > $landscapeSize[1] && abs($landscapeSize[0] - 841.89) < 1 && abs($landscapeSize[1] - 595.28) < 1, 'HTTP PDF export orientation=landscape produces an A4 landscape MediaBox');
+    $assert($status($invalidOrientationPdf) === 200 && $invalidSize[0] > $invalidSize[1] && abs($invalidSize[0] - 841.89) < 1 && abs($invalidSize[1] - 595.28) < 1, 'invalid HTTP PDF orientation safely falls back to landscape');
+    $orientationAuditCount = (int) $fetchDatabase()->query("SELECT COUNT(*) FROM audit_logs WHERE action='report.exported'")->fetchColumn();
+    $assert($orientationAuditCount === 5, 'each portrait, landscape, and invalid-orientation PDF export records one report.exported audit row');
 
     $restored = $post('/restore', ['application_id' => 2]);
     $restoredCsv = $post('/staff/reports.csv');
@@ -111,3 +128,4 @@ try {
 }
 
 fwrite(STDOUT, 'Report export HTTP tests passed: ' . $assertions . PHP_EOL);
+fwrite(STDOUT, 'PDF MediaBoxes (points): ' . json_encode(['portrait' => $portraitSize, 'landscape' => $landscapeSize, 'invalid_fallback' => $invalidSize]) . PHP_EOL);

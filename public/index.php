@@ -730,7 +730,7 @@ try {
                     try {
                         $report = StaffService::applications($database, $user, $_POST, true);
                         $filterOptions = StaffService::filters($database, $user);
-                        $pdfBytes = ReportExport::pdf($report, $filterOptions);
+                        $pdfBytes = ReportExport::pdf($report, $filterOptions, $user, (string) ($_POST['include_signature_lines'] ?? '') === '1', (string) ($_POST['orientation'] ?? 'landscape'));
                         StaffService::recordReportExport($database, $user, $_POST, count($report['rows']));
                         while (ob_get_level() > 0) ob_end_clean();
                         header('Content-Type: application/pdf');

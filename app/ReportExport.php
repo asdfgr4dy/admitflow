@@ -27,32 +27,49 @@ final class ReportExport
         return $bytes;
     }
 
-    public static function pdf(array $report, array $filterOptions): string
+    public static function pdf(array $report, array $filterOptions, array $user = [], bool $includeSignatureLines = false, string $orientation = 'landscape'): string
     {
-        $report['display_filters'] = $report['filters'];
-        $programNames = array_column($filterOptions['programs'], 'name', 'id');
-        $yearNames = array_column($filterOptions['years'], 'label', 'id');
-        $reviewerNames = array_column($filterOptions['reviewers'], 'full_name', 'id');
-        $statusNames = ['submitted' => 'Submitted', 'in_screening' => 'In Screening', 'documents_incomplete' => 'Documents Incomplete', 'interview_scheduled' => 'Interview Scheduled', 'accepted' => 'Accepted', 'declined' => 'Declined', 'enrolled' => 'Enrolled'];
-        if (($report['display_filters']['program_id'] ?? '') !== '') $report['display_filters']['program_id'] = $programNames[$report['display_filters']['program_id']] ?? 'Selected program';
-        if (($report['display_filters']['year_id'] ?? '') !== '') $report['display_filters']['year_id'] = $yearNames[$report['display_filters']['year_id']] ?? 'Selected academic year';
-        if (($report['display_filters']['reviewer_id'] ?? '') !== '') $report['display_filters']['reviewer_id'] = $reviewerNames[$report['display_filters']['reviewer_id']] ?? 'Selected reviewer';
-        if (($report['display_filters']['status'] ?? '') !== '') $report['display_filters']['status'] = $statusNames[$report['display_filters']['status']] ?? $report['display_filters']['status'];
-        if (($report['display_filters']['documents'] ?? '') !== '') $report['display_filters']['documents'] = $report['display_filters']['documents'] === 'complete' ? 'All verified' : 'Needs attention';
-        if (($report['filters']['date_range'] ?? '') !== '') $report['display_filters']['date_range'] = ['last7' => 'Last 7 Days', 'last30' => 'Last 30 Days', 'term' => 'This Term', 'custom' => 'Custom Range'][$report['filters']['date_range']] ?? 'Selected range';
-        $dateRangeLabels = ['' => 'Any date', 'last7' => 'Last 7 days', 'last30' => 'Last 30 days', 'term' => 'This Term', 'custom' => 'Custom Range'];
+        $reportOrientation = in_array($orientation, ['portrait', 'landscape'], true) ? $orientation : 'landscape';
+        $programs = $filterOptions['programs'];
+        $years = $filterOptions['years'];
+        $reviewers = $filterOptions['reviewers'];
+        $title = 'Applications report';
+        $reportPrintView = true;
+        $reportPdfView = true;
+        require_once dirname(__DIR__) . '/vendor/autoload.php';
+        $stylesheet = file_get_contents(dirname(__DIR__) . '/public/assets/css/app.css');
+        if (!is_string($stylesheet)) throw new RuntimeException('The report stylesheet could not be loaded.');
+        $stylesheetDocument = (new Sabberworm\CSS\Parser($stylesheet))->parse();
+        $stripPageRules = static function (Sabberworm\CSS\CSSList\CSSList $list) use (&$stripPageRules): void {
+            $contents = [];
+            foreach ($list->getContents() as $item) {
+                if ($item instanceof Sabberworm\CSS\Property\AtRule && strtolower($item->atRuleName()) === 'page') continue;
+                if ($item instanceof Sabberworm\CSS\CSSList\CSSList) $stripPageRules($item);
+                if ($item instanceof Sabberworm\CSS\RuleSet\RuleSet) $item->removeMatchingDeclarations('page');
+                $contents[] = $item;
+            }
+            $contentsProperty = new ReflectionProperty(Sabberworm\CSS\CSSList\CSSList::class, 'contents');
+            $contentsProperty->setValue($list, $contents);
+        };
+        $stripPageRules($stylesheetDocument);
+        $stylesheet = '@page { margin: 4mm; }' . $stylesheetDocument->render();
+        $stylesheetHref = 'data:text/css;base64,' . base64_encode($stylesheet);
         ob_start();
         require dirname(__DIR__) . '/resources/views/staff/reports-pdf.php';
         $html = (string) ob_get_clean();
-        require_once dirname(__DIR__) . '/vendor/autoload.php';
         $options = new Dompdf\Options();
+        $options->setDefaultMediaType('print');
         $options->set('isRemoteEnabled', false);
         $options->set('isPhpEnabled', false);
         $options->set('defaultFont', 'DejaVu Sans');
         $dompdf = new Dompdf\Dompdf($options);
         $dompdf->loadHtml($html, 'UTF-8');
-        $dompdf->setPaper('A4', 'landscape');
+        $dompdf->setPaper('A4', $reportOrientation);
         $dompdf->render();
+        $canvas = $dompdf->getCanvas();
+        $font = $dompdf->getFontMetrics()->getFont('DejaVu Sans', 'normal');
+        $canvas->page_text(34, $canvas->get_height() - 24, 'AdmitFlow · Admission Office · Confidential, for authorized staff only', $font, 7, [0.07, 0.20, 0.29]);
+        $canvas->page_text($canvas->get_width() - 105, $canvas->get_height() - 24, 'Page {PAGE_NUM} of {PAGE_COUNT}', $font, 7, [0.07, 0.20, 0.29]);
         return $dompdf->output();
     }
 }

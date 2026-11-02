@@ -714,6 +714,19 @@ h1 em, h2 em { color: #8B5C15; font-style: italic; }
 .staff-reports-page .staff-table th a { color: inherit; text-decoration: none; white-space: nowrap; }
 .staff-reports-page .staff-table th a:hover { text-decoration: underline; }
 .staff-reports-page .staff-table { min-width: 980px; }
+.staff-reports-page .report-screen-table { width: 100%; min-width: 900px; table-layout: fixed; }
+.staff-reports-page .report-screen-table .report-col-reference { width: 16%; }
+.staff-reports-page .report-screen-table .report-col-applicant { width: 20%; }
+.staff-reports-page .report-screen-table .report-col-program { width: 18%; }
+.staff-reports-page .report-screen-table .report-col-submitted { width: 12%; }
+.staff-reports-page .report-screen-table .report-col-documents { width: 10%; }
+.staff-reports-page .report-screen-table .report-col-reviewer { width: 10%; }
+.staff-reports-page .report-screen-table .report-col-status { width: 14%; }
+.staff-reports-page .report-screen-table td { white-space: nowrap; overflow-wrap: normal; word-break: normal; hyphens: none; }
+.staff-reports-page .report-screen-table .report-cell-reference, .staff-reports-page .report-screen-table .report-cell-submitted, .staff-reports-page .report-screen-table .report-cell-status { white-space: nowrap; }
+.staff-reports-page .report-screen-table .report-cell-applicant, .staff-reports-page .report-screen-table .report-cell-program { white-space: normal; }
+.staff-reports-page .report-screen-table .report-cell-reference { font-size: 8pt; font-variant-numeric: tabular-nums; }
+.staff-reports-page .report-screen-table .report-cell-program small { display: block; margin-top: 2px; color: #61757D; font-size: .72rem; }
 .staff-reports-page .report-date-filter { min-width: 170px; }
 .admin-dashboard-page .metric-grid { grid-template-columns: repeat(5,minmax(0,1fr)); }
 .admin-dashboard-page > .dashboard-charts { margin-top: 0; }
@@ -805,7 +818,7 @@ h1 em, h2 em { color: #8B5C15; font-style: italic; }
 .print-preview-document { min-width: 0; margin: 0; background: #DDE3E1; }
 .print-preview-document .student-print-document { max-width: none; padding: 24px 0; }
 .print-preview-document .document-print-page { box-sizing: border-box; width: min(210mm, calc(100vw - 32px)); min-height: 297mm; margin: 0 auto; padding: 14mm 12mm; border: 0; background: #FFFFFF; box-shadow: 0 8px 30px rgba(20,35,42,.16); }
-.print-preview-document.print-landscape .document-print-page { width: min(297mm, calc(100vw - 32px)); min-height: 210mm; }
+.print-preview-document .document-print-page.print-landscape { width: min(297mm, calc(100vw - 32px)); min-height: 210mm; }
 .document-unavailable { max-width: 660px; padding: 26px 0; }
 .document-unavailable h1 { margin-bottom: 10px; color: var(--navy); font-family: var(--serif); font-size: 2rem; }
 .document-unavailable p:last-child { color: var(--muted); }
@@ -816,7 +829,7 @@ h1 em, h2 em { color: #8B5C15; font-style: italic; }
 
 @media (max-width: 760px) {
     .print-preview-document .document-print-page { min-height: calc(141.43vw - 45px); }
-    .print-preview-document.print-landscape .document-print-page { min-height: calc(70.71vw - 23px); }
+    .print-preview-document .document-print-page.print-landscape { min-height: calc(70.71vw - 23px); }
 }
 .report-print-heading { display: none; }
 .report-actions { display: flex; align-items: center; gap: 14px; margin: 0 0 23px; }
@@ -1424,13 +1437,24 @@ img.document-preview-media { width: auto; max-width: 100%; height: auto; max-hei
     @bottom-center { content: "AdmitFlow · Admission Office — Page " counter(page) " of " counter(pages); font-family: Georgia, 'Times New Roman', serif; font-size: 8pt; color: #444; }
 }
 
+@page report-portrait {
+    size: A4 portrait;
+    margin: 12mm;
+    @bottom-center { content: none; }
+    @bottom-left { content: "AdmitFlow · Admission Office · Confidential, for authorized staff only"; font-family: "DejaVu Sans", sans-serif; font-size: 7pt; color: #173247; }
+    @bottom-right { content: "Page " counter(page) " of " counter(pages); font-family: "DejaVu Sans", sans-serif; font-size: 7pt; color: #173247; }
+}
+
 @page report-landscape {
     size: A4 landscape;
     margin: 12mm;
-    @bottom-center { content: "AdmitFlow · Admission Office — Page " counter(page) " of " counter(pages); font-family: Georgia, 'Times New Roman', serif; font-size: 8pt; color: #444; }
+    @bottom-center { content: none; }
+    @bottom-left { content: "AdmitFlow · Admission Office · Confidential, for authorized staff only"; font-family: "DejaVu Sans", sans-serif; font-size: 7pt; color: #173247; }
+    @bottom-right { content: "Page " counter(page) " of " counter(pages); font-family: "DejaVu Sans", sans-serif; font-size: 7pt; color: #173247; }
 }
 
-.print-landscape { page: report-landscape; }
+.report-preview-page { page: report-portrait; }
+.report-preview-page.print-landscape, .document-print-page.print-landscape { page: report-landscape; }
 
 @media print {
     body, body.authenticated-layout { background: #fff !important; color: #111 !important; font-family: Georgia, 'Times New Roman', serif; font-size: 10pt; }
@@ -1598,7 +1622,7 @@ img.document-preview-media { width: auto; max-width: 100%; height: auto; max-hei
 
 body.report-print-document { min-width: 0; margin: 0; background: #DDE3E1; color: #263746; }
 .report-preview-page { box-sizing: border-box; width: min(210mm, calc(100vw - 32px)); min-height: 297mm; margin: 24px auto; padding: 14mm 12mm; color: #263746; background: #FFFFFF; box-shadow: 0 8px 30px rgba(20,35,42,.16); }
-body.report-print-document.print-landscape .report-preview-page { width: min(297mm, calc(100vw - 32px)); min-height: 210mm; }
+body.report-print-document .report-preview-page.print-landscape { width: min(297mm, calc(100vw - 32px)); min-height: 210mm; }
 .report-preview-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 20px; margin-bottom: 20px; padding-bottom: 16px; border-bottom: 1px solid #D9E4DF; }
 .report-preview-header .eyebrow { margin-bottom: 5px; color: #39775F; }
 .report-preview-header h1 { margin: 0 0 5px; color: #16334A; font-family: var(--sans); font-size: 1.8rem; font-weight: 800; }
@@ -1632,7 +1656,7 @@ body.report-print-document.print-landscape .report-preview-page { width: min(297
 
 @media (max-width: 760px) {
     .report-preview-page { min-height: calc(141.43vw - 45px); }
-    body.report-print-document.print-landscape .report-preview-page { min-height: calc(70.71vw - 23px); }
+    body.report-print-document .report-preview-page.print-landscape { min-height: calc(70.71vw - 23px); }
 }
 
 @media print {
@@ -1656,14 +1680,75 @@ body.report-print-document.print-landscape .report-preview-page { width: min(297
     .report-preview-table-wrap { overflow: visible !important; }
     .report-preview-table { width: 100%; min-width: 0; border-collapse: collapse; table-layout: fixed; font-size: 9pt; }
     .report-preview-table th, .report-preview-table td { padding: 4px; border: 1px solid #777777 !important; color: #111111 !important; background: #FFFFFF !important; }
-    .report-preview-table .status-pill, .report-preview-table .report-unassigned { border: 1px solid #555555 !important; color: #111111 !important; background: #FFFFFF !important; }
     .report-preview-privacy { margin-top: 4mm; }
 }
 
+body.report-print-document { font-family: "DejaVu Sans", sans-serif; }
+.report-preview-page { box-sizing: border-box; width: min(210mm, calc(100vw - 32px)); min-height: 297mm; margin: 24px auto; padding: 8mm; font-family: "DejaVu Sans", sans-serif; font-size: 9pt; line-height: 1.25; overflow-wrap: normal; word-break: normal; hyphens: none; }
+.report-preview-page.print-landscape { width: min(297mm, calc(100vw - 32px)); min-height: 210mm; }
+.report-preview-header { margin-bottom: 2mm; padding-bottom: 2mm; }
+.report-preview-header .eyebrow, .report-preview-header p:last-child { font-family: "DejaVu Sans", sans-serif; font-size: 8pt; }
+.report-preview-header h1 { font-family: "DejaVu Sans", sans-serif; font-size: 17pt; }
+.report-preview-filters { margin-bottom: 2mm; padding: 1.5mm 2mm; }
+.report-preview-filters h2 { font-size: 8pt; }
+.report-preview-filters p { font-size: 7.5pt; overflow-wrap: anywhere; }
+.report-preview-summary { display: table; width: 100%; table-layout: fixed; border-collapse: separate; border-spacing: 1.5mm 0; margin-bottom: 2mm; }
+.report-preview-summary article { display: table-cell; width: 25%; padding: 1.2mm; vertical-align: top; }
+.report-preview-summary span, .report-preview-summary small { font-size: 7pt; }
+.report-preview-summary strong { font-family: "DejaVu Sans", sans-serif; font-size: 11pt; font-variant-numeric: tabular-nums; }
+.report-preview-funnel { margin-bottom: 2mm; }
+.report-preview-funnel h2, .report-preview-table-section h2 { font-family: "DejaVu Sans", sans-serif; font-size: 9pt; }
+.report-preview-funnel-table, .report-preview-table { width: 100%; min-width: 0; margin: 0; border-collapse: collapse; table-layout: fixed; font-family: "DejaVu Sans", sans-serif; font-size: 6.75pt; }
+.report-preview-funnel-table th, .report-preview-funnel-table td, .report-preview-table th, .report-preview-table td { padding: .9mm .8mm; border: 1px solid #9EAAA5; vertical-align: top; text-align: left; overflow-wrap: normal; word-break: normal; hyphens: none; }
+.report-preview-funnel-table th, .report-preview-table th { background: #EDF2EF; font-weight: 700; }
+.report-preview-funnel-table td:nth-child(n+2) { white-space: nowrap; font-variant-numeric: tabular-nums; }
+.report-preview-table-wrap { overflow: visible; }
+.report-preview-table .report-col-reference { width: 16%; }
+.report-preview-table .report-col-applicant { width: 20%; }
+.report-preview-table .report-col-program { width: 18%; }
+.report-preview-table .report-col-submitted { width: 12%; }
+.report-preview-table .report-col-documents { width: 10%; }
+.report-preview-table .report-col-reviewer { width: 10%; }
+.report-preview-table .report-col-status { width: 14%; }
+.report-preview-table th { font-size: 6.5pt; white-space: nowrap; }
+.report-preview-table td { white-space: nowrap; }
+.report-preview-table .report-cell-reference { font-size: 8pt; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.report-preview-table .report-cell-applicant, .report-preview-table .report-cell-program { white-space: normal; }
+.report-preview-table .report-cell-program small { display: block; margin-top: 1mm; font-size: 6.5pt; }
+.report-preview-table .report-cell-plain, .report-preview-table .report-cell-status { border-radius: 0; outline: 0; box-shadow: none; background: transparent; }
+.report-preview-table .report-cell-status { white-space: nowrap; font-size: 6.5pt; }
+.report-preview-table .report-cell-plain .report-unassigned, .report-preview-table .report-cell-status .status-pill { padding: 0; border: 0; border-radius: 0; outline: 0; box-shadow: none; background: transparent; color: inherit; font: inherit; }
+.report-preview-definitions, .report-preview-privacy, .report-preview-confidentiality { margin: 1mm 0 0; font-size: 7pt; }
+.report-preview-confidentiality { padding-top: 1.5mm; border-top: 1px solid #D9E4DF; text-align: center; font-weight: 700; }
+.report-preview-header, .report-preview-filters, .report-preview-summary, .report-preview-funnel, .report-preview-definitions, .report-preview-privacy, .report-preview-confidentiality, .report-preview-table tr { break-inside: avoid; page-break-inside: avoid; }
+.report-preview-header { border-bottom: 1px solid #16334A; }
+.report-preview-total { margin: 2mm 0 0; font-size: 7pt; font-weight: 700; }
+.report-preview-signatures { display: none; grid-template-columns: 1fr 1fr 1fr; gap: 12mm; margin-top: 12mm; break-inside: avoid; page-break-inside: avoid; }
+.report-preview-signatures > div { display: grid; grid-template-rows: auto 1fr; gap: 10mm; font-size: 8pt; }
+.report-preview-signatures i { display: block; min-height: 1px; border-bottom: 1px solid #526671; }
+body.include-signature-lines .report-preview-signatures { display: grid; }
+
+@media print {
+    body.report-print-document, body.report-print-document * { font-family: "DejaVu Sans", sans-serif !important; color: #111111 !important; }
+    body.report-print-document { font-size: 9pt; }
+    body.report-print-document .report-preview-page { width: auto !important; min-height: 0 !important; margin: 0 !important; padding: 0 !important; background: #FFFFFF !important; box-shadow: none !important; }
+    .report-preview-page { overflow-wrap: normal !important; word-break: normal !important; hyphens: none !important; }
+    .report-preview-table caption { display: none; }
+    .report-preview-table-wrap { overflow: visible !important; }
+    .report-preview-table th, .report-preview-table td, .report-preview-funnel-table th, .report-preview-funnel-table td { border-color: #9EAAA5 !important; }
+    .report-preview-table .report-cell-plain .report-unassigned, .report-preview-table .report-cell-status .status-pill { padding: 0 !important; border: 0 !important; border-radius: 0 !important; outline: 0 !important; box-shadow: none !important; background: transparent !important; }
+}
+
 .print-preview-modal .modal-content { min-height: min(82vh, 900px); }
+.print-preview-orientation .btn { min-width: 88px; }
+.print-preview-orientation .btn.active, .print-preview-orientation .btn[aria-pressed="true"] { border-color: #16334A; background: #16334A; color: #FFFFFF; box-shadow: none; }
+.print-preview-orientation .btn:focus-visible { position: relative; z-index: 1; outline: 3px solid #6FA58D; outline-offset: 2px; }
 .print-preview-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; }
 .print-preview-toolbar .modal-title { margin-right: auto; }
 .print-preview-toolbar-actions { display: flex; gap: 8px; }
+.print-preview-signature-toggle { display: inline-flex; min-height: 38px; align-items: center; gap: 7px; color: #405966; font-size: .78rem; font-weight: 700; white-space: nowrap; }
+.print-preview-signature-toggle input { width: 16px; height: 16px; accent-color: #16334A; }
+.print-preview-tip { margin: 0; padding: 0 18px 10px; color: #536C78; font-size: .74rem; }
 .print-preview-modal-body { position: relative; min-height: 55vh; padding: 0 !important; background: #DDE3E1; }
 .print-preview-loading, .print-preview-error { display: flex; min-height: 55vh; align-items: center; justify-content: center; gap: 10px; padding: 24px; text-align: center; }
 .print-preview-error { flex-direction: column; }

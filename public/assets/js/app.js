@@ -265,10 +265,13 @@
             const previewLoading = printPreviewModal.querySelector('[data-preview-loading]');
             const previewError = printPreviewModal.querySelector('[data-preview-error]');
             const previewPrint = printPreviewModal.querySelector('[data-preview-print]');
+            const signatureToggle = printPreviewModal.querySelector('[data-preview-signatures]');
+            const pdfSignatureField = document.querySelector('[data-pdf-signatures]');
+            const pdfOrientationField = document.querySelector('[data-pdf-orientation]');
             const orientationButtons = [...printPreviewModal.querySelectorAll('[data-preview-orientation]')];
             let previewTimer = 0;
             let previewUrl = '';
-            let orientation = 'portrait';
+            let orientation = 'landscape';
             let previewReady = false;
             let modalOpen = false;
             let opener = null;
@@ -286,12 +289,57 @@
                 try {
                     const previewDocument = previewFrame.contentDocument;
                     if (!previewDocument || previewFrame.contentWindow.location.origin !== window.location.origin) return false;
-                    previewDocument.body.classList.toggle('print-landscape', orientation === 'landscape');
+                    const previewSheet = previewDocument.querySelector('[data-print-preview-sheet]');
+                    if (!previewSheet) return false;
+                    previewSheet.classList.toggle('print-landscape', orientation === 'landscape');
+                    if (pdfOrientationField) pdfOrientationField.value = orientation;
                     return true;
                 } catch {
                     return false;
                 }
             };
+
+            const applySignatures = () => {
+                try {
+                    const previewDocument = previewFrame.contentDocument;
+                    if (!previewDocument || previewFrame.contentWindow.location.origin !== window.location.origin) return false;
+                    const include = Boolean(signatureToggle?.checked);
+                    previewDocument.body.classList.toggle('include-signature-lines', include);
+                    const signatureBlock = previewDocument.querySelector('.report-preview-signatures');
+                    if (signatureBlock) signatureBlock.hidden = !include;
+                    return true;
+                } catch {
+                    return false;
+                }
+            };
+
+            const setOrientation = (nextOrientation, persist = true) => {
+                orientation = nextOrientation === 'portrait' ? 'portrait' : 'landscape';
+                orientationButtons.forEach(button => {
+                    const selected = button.dataset.previewOrientation === orientation;
+                    button.classList.toggle('active', selected);
+                    button.setAttribute('aria-pressed', selected ? 'true' : 'false');
+                });
+                if (persist) {
+                    try { window.sessionStorage.setItem('admitflow-report-orientation', orientation); } catch {}
+                }
+                if (pdfOrientationField) pdfOrientationField.value = orientation;
+                if (previewReady) {
+                    applyOrientation();
+                    applySignatures();
+                }
+            };
+
+            signatureToggle?.addEventListener('change', () => {
+                if (pdfSignatureField) pdfSignatureField.value = signatureToggle.checked ? '1' : '0';
+                if (previewReady) applySignatures();
+            });
+
+            try {
+                const savedOrientation = window.sessionStorage.getItem('admitflow-report-orientation');
+                if (savedOrientation === 'portrait' || savedOrientation === 'landscape') orientation = savedOrientation;
+            } catch {}
+            setOrientation(orientation, false);
 
             const loadReportPreview = () => {
                 window.clearTimeout(previewTimer);
@@ -316,7 +364,7 @@
                     const previewWindow = previewFrame.contentWindow;
                     const previewDocument = previewFrame.contentDocument;
                     if (!previewWindow || !previewDocument || previewWindow.location.origin !== window.location.origin || previewWindow.location.href !== previewUrl) return;
-                    if (!previewDocument.querySelector('[data-print-preview-sheet]') || !applyOrientation()) {
+                    if (!previewDocument.querySelector('[data-print-preview-sheet]') || !applyOrientation() || !applySignatures()) {
                         setPreviewError();
                         return;
                     }
@@ -331,15 +379,21 @@
                 }
             });
 
-            orientationButtons.forEach(button => button.addEventListener('click', () => {
-                orientation = button.dataset.previewOrientation;
-                orientationButtons.forEach(option => {
-                    const selected = option === button;
-                    option.classList.toggle('active', selected);
-                    option.setAttribute('aria-pressed', selected ? 'true' : 'false');
+            orientationButtons.forEach((button, index) => {
+                button.addEventListener('click', () => setOrientation(button.dataset.previewOrientation));
+                button.addEventListener('keydown', event => {
+                    let nextIndex = null;
+                    if (event.key === 'ArrowRight' || event.key === 'ArrowDown') nextIndex = (index + 1) % orientationButtons.length;
+                    if (event.key === 'ArrowLeft' || event.key === 'ArrowUp') nextIndex = (index - 1 + orientationButtons.length) % orientationButtons.length;
+                    if (event.key === 'Home') nextIndex = 0;
+                    if (event.key === 'End') nextIndex = orientationButtons.length - 1;
+                    if (nextIndex !== null) {
+                        event.preventDefault();
+                        orientationButtons[nextIndex].focus();
+                        setOrientation(orientationButtons[nextIndex].dataset.previewOrientation);
+                    }
                 });
-                if (previewReady) applyOrientation();
-            }));
+            });
 
             printPreviewModal.querySelector('[data-preview-retry]')?.addEventListener('click', loadReportPreview);
             previewPrint.addEventListener('click', () => {
@@ -350,12 +404,12 @@
             printPreviewModal.addEventListener('show.bs.modal', event => {
                 modalOpen = true;
                 opener = event.relatedTarget || document.activeElement;
-                orientation = 'portrait';
-                orientationButtons.forEach(button => {
-                    const selected = button.dataset.previewOrientation === orientation;
-                    button.classList.toggle('active', selected);
-                    button.setAttribute('aria-pressed', selected ? 'true' : 'false');
-                });
+                try {
+                    const savedOrientation = window.sessionStorage.getItem('admitflow-report-orientation');
+                    setOrientation(savedOrientation === 'portrait' ? 'portrait' : 'landscape', false);
+                } catch {
+                    setOrientation('landscape', false);
+                }
             });
             printPreviewModal.addEventListener('shown.bs.modal', loadReportPreview);
             printPreviewModal.addEventListener('hidden.bs.modal', () => {
