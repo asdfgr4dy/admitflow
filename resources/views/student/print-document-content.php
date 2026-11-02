@@ -1,4 +1,4 @@
-<article class="document-print-page">
+<article class="document-print-page" data-print-preview-sheet>
     <header class="document-print-header">
         <p>AdmitFlow</p>
         <p>Admission Office</p>

@@ -7,6 +7,7 @@ require dirname(__DIR__) . '/app/ApplicationService.php';
 require dirname(__DIR__) . '/app/AnnouncementService.php';
 require dirname(__DIR__) . '/app/Pagination.php';
 require dirname(__DIR__) . '/app/StaffService.php';
+require dirname(__DIR__) . '/app/ReportExport.php';
 require dirname(__DIR__) . '/app/PasswordResetService.php';
 require dirname(__DIR__) . '/app/BackupIntegrity.php';
 require dirname(__DIR__) . '/app/BackupService.php';
@@ -18,12 +19,17 @@ require dirname(__DIR__) . '/app/AvatarService.php';
 require dirname(__DIR__) . '/app/LoginRateLimitPolicy.php';
 require dirname(__DIR__) . '/app/StatusTransitionPolicy.php';
 require dirname(__DIR__) . '/app/UploadPolicy.php';
+require_once dirname(__DIR__) . '/app/AuditLog.php';
 
 header('X-Content-Type-Options: nosniff');
 header('X-Frame-Options: DENY');
 header('Referrer-Policy: strict-origin-when-cross-origin');
 header("Content-Security-Policy: default-src 'self'; style-src 'self' https://cdn.jsdelivr.net; script-src 'self' https://cdn.jsdelivr.net; font-src 'self' https://cdn.jsdelivr.net data:; img-src 'self' data: blob:; frame-src 'self' blob:");
 header('Cache-Control: no-store');
+$requestHost = strtolower((string) parse_url('//' . (string) ($_SERVER['HTTP_HOST'] ?? ''), PHP_URL_HOST));
+if ($isHttps && (getenv('ADMITFLOW_APP_ENV') ?: '') !== 'local' && !in_array($requestHost, ['localhost', '127.0.0.1', '::1', '[::1]'], true)) {
+    header('Strict-Transport-Security: max-age=31536000; includeSubDomains');
+}
 
 $path = parse_url($_SERVER['REQUEST_URI'] ?? '/', PHP_URL_PATH) ?: '/';
 $path = rtrim($path, '/') ?: '/';
@@ -161,12 +167,15 @@ try {
             try {
                 if (($_POST['action'] ?? 'upload') === 'remove') {
                     AvatarService::remove((int) $user['id']);
+                    AuditLog::record($database, $user, 'account.avatar_removed', 'user', (int) $user['id'], 'success', [], 'notice');
                     flash('success', 'Profile picture removed.');
                 } else {
                     AvatarService::store((int) $user['id'], $_FILES['avatar'] ?? []);
+                    AuditLog::record($database, $user, 'account.avatar_updated', 'user', (int) $user['id'], 'success', [], 'notice');
                     flash('success', 'Profile picture updated.');
                 }
             } catch (DomainException $error) {
+                AuditLog::record($database, $user, 'account.avatar_change_failed', 'user', (int) $user['id'], 'failure', ['reason' => $error->getMessage()], 'warning');
                 flash('warning', $error->getMessage());
             }
             redirect('/settings/profile');
@@ -220,10 +229,66 @@ try {
                 redirect('/login');
             }
             if (!in_array($user['role'], ['reviewer', 'admin'], true)) {
+                if ($path === '/staff/user/delete') {
+                    AuditLog::record($database, $user, 'user.account_delete_blocked', 'user', (int) ($_POST['user_id'] ?? 0) ?: null, 'failure', ['reason' => 'Administrator access is required.'], 'warning');
+                } elseif (in_array($path, ['/staff/application/archive', '/staff/application/restore'], true)) {
+                    $isRestoreAttempt = $path === '/staff/application/restore';
+                    AuditLog::record($database, $user, $isRestoreAttempt ? 'application.restore_blocked' : 'application.archive_blocked', 'application', (int) ($_POST['application_id'] ?? 0) ?: null, 'failure', ['reason' => 'Administrator access is required.'], 'warning');
+                } elseif ($path === '/staff/announcement/delete') {
+                    AuditLog::record($database, $user, 'announcement.delete_blocked', 'announcement', (int) ($_POST['announcement_id'] ?? 0) ?: null, 'failure', ['reason' => 'Administrator access is required.'], 'warning');
+                } elseif ($path === '/staff/academic-setting/delete') {
+                    AuditLog::record($database, $user, 'academic_setting.delete_blocked', 'academic_setting', null, 'failure', ['reason' => 'Administrator access is required.'], 'warning');
+                }
                 http_response_code(403);
                 exit('Admissions staff access is required.');
             }
             try {
+                if ($path === '/staff/user/delete') {
+                    if ($user['role'] !== 'admin') {
+                        AuditLog::record($database, $user, 'user.account_delete_blocked', 'user', (int) ($_POST['user_id'] ?? 0) ?: null, 'failure', ['reason' => 'Administrator access is required.'], 'warning');
+                        throw new DomainException('Administrator access is required to delete accounts.');
+                    }
+                    $targetUserId = filter_var($_POST['user_id'] ?? null, FILTER_VALIDATE_INT, ['options' => ['min_range' => 1]]);
+                    if ($targetUserId === false) throw new DomainException('Choose a valid account to delete.');
+                    $targetRoleQuery = $database->prepare('SELECT role FROM users WHERE id = :id');
+                    $targetRoleQuery->execute(['id' => $targetUserId]);
+                    $targetRole = (string) ($targetRoleQuery->fetchColumn() ?: 'reviewer');
+                    try {
+                        StaffAccountService::delete($database, $user, (int) $targetUserId);
+                    } catch (DomainException $error) {
+                        flash('warning', $error->getMessage() . ' Use Deactivate instead when history exists.');
+                        redirect(match ($targetRole) {
+                            'admin' => '/staff/users/administrators',
+                            'student' => '/staff/users/students',
+                            default => '/staff/users/staff',
+                        });
+                    }
+                    flash('success', 'Account deleted permanently. Its admission and audit history was preserved where applicable.');
+                    redirect(match ($targetRole) {
+                        'admin' => '/staff/users/administrators',
+                        'student' => '/staff/users/students',
+                        default => '/staff/users/staff',
+                    });
+                }
+                if ($path === '/staff/application/archive' || $path === '/staff/application/restore') {
+                    if ($user['role'] !== 'admin') {
+                        $restoreAttempt = $path === '/staff/application/restore';
+                        AuditLog::record($database, $user, $restoreAttempt ? 'application.restore_blocked' : 'application.archive_blocked', 'application', (int) ($_POST['application_id'] ?? 0) ?: null, 'failure', ['reason' => 'Administrator access is required.'], 'warning');
+                        throw new DomainException('Administrator access is required to archive or restore applications.');
+                    }
+                    $applicationId = filter_var($_POST['application_id'] ?? null, FILTER_VALIDATE_INT, ['options' => ['min_range' => 1]]);
+                    if ($applicationId === false) throw new DomainException('Choose a valid application.');
+                    $isRestore = $path === '/staff/application/restore';
+                    try {
+                        if ($isRestore) StaffService::restoreApplication($database, $user, (int) $applicationId);
+                        else StaffService::archiveApplication($database, $user, (int) $applicationId);
+                    } catch (DomainException $error) {
+                        flash('warning', $error->getMessage());
+                        redirect('/admin/applications?archived=' . ($isRestore ? 'archived' : 'active'));
+                    }
+                    flash('success', $isRestore ? 'Application restored to active queues.' : 'Application archived. Its history and documents were retained.');
+                    redirect('/admin/applications?archived=active');
+                }
                 if ($path === '/staff/program/save') {
                     if ($user['role'] !== 'admin') {
                         throw new DomainException('Administrator access is required to manage programs.');
@@ -258,8 +323,7 @@ try {
                             $programId = (int) $database->lastInsertId();
                             $action = 'program.created';
                         }
-                        $audit = $database->prepare('INSERT INTO audit_logs (user_id, actor_label, action, entity_type, entity_id, outcome, ip_address, details) VALUES (:user_id, :actor, :action, \'academic_program\', :entity_id, \'success\', :ip, :details)');
-                        $audit->execute(['user_id' => $user['id'], 'actor' => $user['full_name'], 'action' => $action, 'entity_id' => $programId, 'ip' => request_ip(), 'details' => json_encode(['before' => $previousProgram, 'after' => ['code' => $code, 'name' => $name, 'description' => $description !== '' ? $description : null, 'is_active' => ($_POST['is_active'] ?? '') === '1']], JSON_THROW_ON_ERROR)]);
+                        AuditLog::record($database, $user, $action, 'academic_program', $programId, 'success', ['before' => $previousProgram, 'after' => ['code' => $code, 'name' => $name, 'is_active' => ($_POST['is_active'] ?? '') === '1']]);
                         $database->commit();
                     } catch (Throwable $error) {
                         if ($database->inTransaction()) {
@@ -275,6 +339,7 @@ try {
                 }
                 if ($path === '/staff/academic-setting/delete') {
                     if ($user['role'] !== 'admin') {
+                        AuditLog::record($database, $user, 'academic_setting.delete_blocked', 'academic_setting', null, 'failure', ['reason' => 'Administrator access is required.'], 'warning');
                         throw new DomainException('Administrator access is required to delete academic settings.');
                     }
                     $settingType = (string) ($_POST['setting_type'] ?? '');
@@ -309,12 +374,14 @@ try {
                         }
                         $delete = $database->prepare('DELETE FROM ' . $setting['table'] . ' WHERE id = :id');
                         $delete->execute(['id' => $settingId]);
-                        $audit = $database->prepare('INSERT INTO audit_logs (user_id, actor_label, action, entity_type, entity_id, outcome, ip_address) VALUES (:user_id, :actor, :action, :entity_type, :entity_id, \'success\', :ip)');
-                        $audit->execute(['user_id' => $user['id'], 'actor' => $user['full_name'], 'action' => $setting['entity'] . '.deleted', 'entity_type' => $setting['entity'], 'entity_id' => $settingId, 'ip' => request_ip()]);
+                        AuditLog::record($database, $user, $setting['entity'] . '.deleted', $setting['entity'], $settingId, 'success', [], 'notice');
                         $database->commit();
                     } catch (Throwable $error) {
                         if ($database->inTransaction()) {
                             $database->rollBack();
+                        }
+                        if ($error instanceof DomainException) {
+                            AuditLog::record($database, $user, $setting['entity'] . '.delete_blocked', $setting['entity'], $settingId, 'warning', ['reason' => $error->getMessage()], 'warning');
                         }
                         if ($error instanceof PDOException && $error->getCode() === '23000') {
                             throw new DomainException('This ' . $setting['label'] . ' is in use and cannot be deleted. Deactivate it instead.');
@@ -367,8 +434,7 @@ try {
                             $yearId = (int) $database->lastInsertId();
                             $action = 'academic_year.created';
                         }
-                        $audit = $database->prepare('INSERT INTO audit_logs (user_id, actor_label, action, entity_type, entity_id, outcome, ip_address, details) VALUES (:user_id, :actor, :action, \'academic_year\', :entity_id, \'success\', :ip, :details)');
-                        $audit->execute(['user_id' => $user['id'], 'actor' => $user['full_name'], 'action' => $action, 'entity_id' => $yearId, 'ip' => request_ip(), 'details' => json_encode(['before' => $previousYear, 'after' => ['label' => $label, 'starts_on' => $startsOn, 'ends_on' => $endsOn, 'application_deadline' => $deadline ?: null, 'is_open' => ($_POST['is_open'] ?? '') === '1']], JSON_THROW_ON_ERROR)]);
+                        AuditLog::record($database, $user, $action, 'academic_year', $yearId, 'success', ['before' => $previousYear, 'after' => ['label' => $label, 'starts_on' => $startsOn, 'ends_on' => $endsOn, 'application_deadline' => $deadline ?: null, 'is_open' => ($_POST['is_open'] ?? '') === '1']]);
                         $database->commit();
                     } catch (Throwable $error) {
                         if ($database->inTransaction()) $database->rollBack();
@@ -429,8 +495,7 @@ try {
                             $requirementId = (int) $database->lastInsertId();
                             $action = 'requirement.created';
                         }
-                        $audit = $database->prepare('INSERT INTO audit_logs (user_id, actor_label, action, entity_type, entity_id, outcome, ip_address, details) VALUES (:user_id, :actor, :action, \'admission_requirement\', :entity_id, \'success\', :ip, :details)');
-                        $audit->execute(['user_id' => $user['id'], 'actor' => $user['full_name'], 'action' => $action, 'entity_id' => $requirementId, 'ip' => request_ip(), 'details' => json_encode(['before' => $previousRequirement, 'after' => ['code' => $code, 'name' => $name, 'instructions' => $instructions ?: null, 'academic_program_id' => $programId, 'academic_year_id' => $yearId, 'allowed_extensions' => implode(',', $extensionList), 'max_file_size_bytes' => $maxBytes, 'is_required' => ($_POST['is_required'] ?? '') === '1', 'is_active' => ($_POST['is_active'] ?? '') === '1']], JSON_THROW_ON_ERROR)]);
+                        AuditLog::record($database, $user, $action, 'admission_requirement', $requirementId, 'success', ['before' => $previousRequirement, 'after' => ['code' => $code, 'name' => $name, 'academic_program_id' => $programId, 'academic_year_id' => $yearId, 'allowed_extensions' => implode(',', $extensionList), 'max_file_size_bytes' => $maxBytes, 'is_required' => ($_POST['is_required'] ?? '') === '1', 'is_active' => ($_POST['is_active'] ?? '') === '1']]);
                         $database->commit();
                     } catch (Throwable $error) {
                         if ($database->inTransaction()) $database->rollBack();
@@ -477,8 +542,7 @@ try {
                             $announcementId = (int) $database->lastInsertId();
                             $action = 'announcement.created';
                         }
-                        $audit = $database->prepare('INSERT INTO audit_logs (user_id, actor_label, action, entity_type, entity_id, outcome, ip_address) VALUES (:user_id, :actor, :action, \'announcement\', :entity_id, \'success\', :ip)');
-                        $audit->execute(['user_id' => $user['id'], 'actor' => $user['full_name'], 'action' => $action, 'entity_id' => $announcementId, 'ip' => request_ip()]);
+                        AuditLog::record($database, $user, $action, 'announcement', $announcementId, 'success', ['audience' => $audience, 'is_published' => $isPublished]);
                         $database->commit();
                     } catch (Throwable $error) {
                         if ($database->inTransaction()) $database->rollBack();
@@ -530,8 +594,7 @@ try {
                         }
                         $action = 'user.role_or_status_changed';
                     }
-                    $audit = $database->prepare('INSERT INTO audit_logs (user_id, actor_label, action, entity_type, entity_id, outcome, ip_address) VALUES (:user_id, :actor, :action, \'user\', :entity_id, \'success\', :ip)');
-                    $audit->execute(['user_id' => $user['id'], 'actor' => $user['full_name'], 'action' => $action, 'entity_id' => $userId, 'ip' => request_ip()]);
+                    AuditLog::record($database, $user, $action, 'user', $userId, 'success', ['role' => $newRole, 'account_status' => $newStatus], 'notice');
                     $database->commit();
                     flash('success', 'Account role and status saved.');
                         redirect(match ($newRole) {
@@ -650,30 +713,12 @@ try {
                 }
                 if ($path === '/staff/reports.csv') {
                     $report = StaffService::applications($database, $user, $_POST, true);
-                    $output = fopen('php://temp/maxmemory:2097152', 'w+b');
-                    if ($output === false) {
-                        throw new RuntimeException('Could not prepare the report export.');
-                    }
-                    fwrite($output, "\xEF\xBB\xBF");
-                    fputcsv($output, ['Reference', 'Applicant', 'Program', 'Academic year', 'Submitted (UTC)', 'Documents verified', 'Required documents', 'Reviewer', 'Status']);
-                    if ($report['truncated']) {
-                        fputcsv($output, ['NOTICE', 'Only the first 5,000 of ' . $report['total'] . ' matching applications are included. Narrow report filters for a complete export.']);
-                    }
-                    foreach ($report['rows'] as $row) {
-                        $cells = [$row['reference_number'], $row['full_name'], $row['program_name'], $row['year_label'], $row['submitted_at'], $row['verified_documents'], $row['required_documents'], $row['reviewer_name'], $row['status']];
-                        fputcsv($output, array_map(static function ($value): string {
-                            $cell = (string) ($value ?? '');
-                            return preg_match('/^[\x00-\x20\p{Z}]*[=+\-@]/u', $cell) ? "'" . $cell : $cell;
-                        }, $cells));
-                    }
-                    $exportSize = ftell($output);
-                    rewind($output);
+                    $csvBytes = ReportExport::csv($report);
                     StaffService::recordReportExport($database, $user, $_POST, count($report['rows']));
                     header('Content-Type: text/csv; charset=utf-8');
-                    header('Content-Length: ' . $exportSize);
+                    header('Content-Length: ' . strlen($csvBytes));
                     header('Content-Disposition: attachment; filename="admitflow-applications-' . date('Y-m-d') . '.csv"');
-                    fpassthru($output);
-                    fclose($output);
+                    echo $csvBytes;
                     exit;
                 }
                 if ($path === '/staff/reports.pdf') {
@@ -685,31 +730,7 @@ try {
                     try {
                         $report = StaffService::applications($database, $user, $_POST, true);
                         $filterOptions = StaffService::filters($database, $user);
-                        $report['display_filters'] = $report['filters'];
-                        $programNames = array_column($filterOptions['programs'], 'name', 'id');
-                        $yearNames = array_column($filterOptions['years'], 'label', 'id');
-                        $reviewerNames = array_column($filterOptions['reviewers'], 'full_name', 'id');
-                        $statusNames = ['submitted' => 'Submitted', 'in_screening' => 'In Screening', 'documents_incomplete' => 'Documents Incomplete', 'interview_scheduled' => 'Interview Scheduled', 'accepted' => 'Accepted', 'declined' => 'Declined', 'enrolled' => 'Enrolled'];
-                        if (($report['display_filters']['program_id'] ?? '') !== '') $report['display_filters']['program_id'] = $programNames[$report['display_filters']['program_id']] ?? 'Selected program';
-                        if (($report['display_filters']['year_id'] ?? '') !== '') $report['display_filters']['year_id'] = $yearNames[$report['display_filters']['year_id']] ?? 'Selected academic year';
-                        if (($report['display_filters']['reviewer_id'] ?? '') !== '') $report['display_filters']['reviewer_id'] = $reviewerNames[$report['display_filters']['reviewer_id']] ?? 'Selected reviewer';
-                        if (($report['display_filters']['status'] ?? '') !== '') $report['display_filters']['status'] = $statusNames[$report['display_filters']['status']] ?? $report['display_filters']['status'];
-                        if (($report['display_filters']['documents'] ?? '') !== '') $report['display_filters']['documents'] = $report['display_filters']['documents'] === 'complete' ? 'All verified' : 'Needs attention';
-                        if (($report['filters']['date_range'] ?? '') !== '') $report['display_filters']['date_range'] = ['last7' => 'Last 7 Days', 'last30' => 'Last 30 Days', 'term' => 'This Term', 'custom' => 'Custom Range'][$report['filters']['date_range']] ?? 'Selected range';
-                        $dateRangeLabels = ['' => 'Any date', 'last7' => 'Last 7 days', 'last30' => 'Last 30 days', 'term' => 'This Term', 'custom' => 'Custom Range'];
-                        ob_start();
-                        require dirname(__DIR__) . '/resources/views/staff/reports-pdf.php';
-                        $html = (string) ob_get_clean();
-                        require_once dirname(__DIR__) . '/vendor/autoload.php';
-                        $options = new Dompdf\Options();
-                        $options->set('isRemoteEnabled', false);
-                        $options->set('isPhpEnabled', false);
-                        $options->set('defaultFont', 'DejaVu Sans');
-                        $dompdf = new Dompdf\Dompdf($options);
-                        $dompdf->loadHtml($html, 'UTF-8');
-                        $dompdf->setPaper('A4', 'landscape');
-                        $dompdf->render();
-                        $pdfBytes = $dompdf->output();
+                        $pdfBytes = ReportExport::pdf($report, $filterOptions);
                         StaffService::recordReportExport($database, $user, $_POST, count($report['rows']));
                         while (ob_get_level() > 0) ob_end_clean();
                         header('Content-Type: application/pdf');
@@ -1066,6 +1087,10 @@ try {
 
     if (in_array($path, ['/application/print', '/application/acceptance-letter', '/application/enrollment-confirmation'], true)) {
         $user = require_student();
+        $printPreviewView = (string) ($_GET['preview'] ?? '') === '1';
+        if ($method === 'GET' && $printPreviewView) {
+            header('X-Frame-Options: SAMEORIGIN');
+        }
         $application = ApplicationService::printableSummary($database, (int) $user['id']);
         $documentType = match ($path) {
             '/application/acceptance-letter' => 'acceptance',
@@ -1089,6 +1114,9 @@ try {
             'documentType' => $documentType,
             'available' => $available,
             'generatedAt' => new DateTimeImmutable('now', new DateTimeZone('Asia/Manila')),
+            'documentPreviewUrl' => $path . '?preview=1',
+            'printDocumentPreviewView' => $printPreviewView,
+            'standalonePrintView' => $printPreviewView,
         ]);
         exit;
     }
@@ -1287,6 +1315,7 @@ try {
         header('Content-Type: ' . $document['detected_mime_type']);
         header('Content-Length: ' . filesize($filePath));
         header('Content-Disposition: attachment; filename="' . rawurlencode(basename($document['original_name'])) . '"');
+        AuditLog::record($database, $user, 'document.downloaded', 'application_document', (int) $document['id']);
         readfile($filePath);
         exit;
     }
@@ -1331,7 +1360,7 @@ try {
     if (preg_match('#^/document/(\d+)$#', $path, $match)) {
         $user = require_student();
         $statement = $database->prepare(
-            'SELECT d.storage_name, d.original_name, d.detected_mime_type FROM application_documents d JOIN applications a ON a.id = d.application_id WHERE d.id = :document_id AND d.is_current = 1 AND a.student_id = :student_id AND a.deleted_at IS NULL'
+            'SELECT d.id, d.storage_name, d.original_name, d.detected_mime_type FROM application_documents d JOIN applications a ON a.id = d.application_id WHERE d.id = :document_id AND d.is_current = 1 AND a.student_id = :student_id AND a.deleted_at IS NULL'
         );
         $statement->execute(['document_id' => (int) $match[1], 'student_id' => $user['id']]);
         $document = $statement->fetch();
@@ -1344,6 +1373,7 @@ try {
         header('Content-Type: ' . $document['detected_mime_type']);
         header('Content-Length: ' . filesize($filePath));
         header('Content-Disposition: attachment; filename="' . rawurlencode(basename($document['original_name'])) . '"');
+        AuditLog::record($database, $user, 'document.downloaded', 'application_document', (int) $document['id']);
         readfile($filePath);
         exit;
     }
@@ -1359,7 +1389,8 @@ try {
             exit;
         }
         try {
-            $application = StaffService::detail($database, $user, (int) $match[1], false, [], true);
+            $includeArchived = $user['role'] === 'admin' && (string) ($_GET['archived'] ?? '') === '1';
+            $application = StaffService::detail($database, $user, (int) $match[1], false, $_GET, true, $includeArchived);
         } catch (DomainException $error) {
             http_response_code(422);
             render_page('errors/not-ready', ['title' => 'Check application history filters', 'message' => $error->getMessage()]);
@@ -1370,6 +1401,7 @@ try {
             render_page('errors/not-found', ['title' => 'Application not found']);
             exit;
         }
+        AuditLog::recordOncePerWindow($database, $user, 'application.viewed', 'application', (int) $application['id'], 600);
         $options = StaffService::filters($database, $user);
         render_page('staff/application-detail', ['title' => 'Application review', 'user' => $user, 'application' => $application] + $options);
         exit;
@@ -1430,15 +1462,24 @@ try {
             render_page('errors/not-ready', ['title' => 'Admissions staff access required', 'message' => 'Admissions staff access is required.']);
             exit;
         }
+        $printView = (string) ($_GET['view'] ?? '') === 'print';
+        if ($method === 'GET' && $printView && (string) ($_GET['embed'] ?? '') === '1') {
+            header('X-Frame-Options: SAMEORIGIN');
+        }
+        $reportInput = $_GET;
+        unset($reportInput['view'], $reportInput['embed']);
         try {
-            $report = StaffService::applications($database, $user, $_GET, true, true);
+            $report = StaffService::applications($database, $user, $reportInput, true, !$printView);
+            if ($printView) {
+                StaffService::recordReportPrintPreview($database, $user, $report['filters'], count($report['rows']));
+            }
         } catch (DomainException $error) {
             http_response_code(422);
             render_page('errors/not-ready', ['title' => 'Check report filters', 'message' => $error->getMessage()]);
             exit;
         }
         $options = StaffService::filters($database, $user);
-        render_page('staff/reports', ['title' => 'Reports and print center', 'user' => $user, 'report' => $report, 'counts' => $report['summary']['statuses']] + $options);
+        render_page($printView ? 'staff/reports-print' : 'staff/reports', ['title' => $printView ? 'Print preview' : 'Reports and print center', 'user' => $user, 'report' => $report, 'counts' => $report['summary']['statuses'], 'reportPrintView' => $printView, 'standalonePrintView' => $printView] + $options);
         exit;
     }
 
@@ -1677,6 +1718,7 @@ try {
         header('Content-Type: application/octet-stream');
         header('Content-Length: ' . filesize($file));
         header('Content-Disposition: attachment; filename="' . rawurlencode(basename($backup['storage_name'])) . '"');
+        AuditLog::record($database, $user, 'backup.downloaded', 'backup', (int) $match[1], 'success', ['backup_type' => $backup['backup_type']], 'notice');
         readfile($file);
         exit;
     }

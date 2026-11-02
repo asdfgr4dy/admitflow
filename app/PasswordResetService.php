@@ -1,6 +1,8 @@
 <?php
 declare(strict_types=1);
 
+require_once __DIR__ . '/AuditLog.php';
+
 require_once __DIR__ . '/PasswordResetDelivery.php';
 
 final class PasswordResetService
@@ -12,6 +14,7 @@ final class PasswordResetService
     {
         $email = mb_strtolower(trim($email));
         if (!filter_var($email, FILTER_VALIDATE_EMAIL)) {
+            AuditLog::record($database, null, 'auth.password_reset_request_failed', 'user', null, 'failure', ['reason' => 'invalid_request'], 'warning');
             return false;
         }
 
@@ -26,6 +29,7 @@ final class PasswordResetService
             $user = $lookup->fetch();
             if (!is_array($user)) {
                 $database->rollBack();
+                AuditLog::record($database, null, 'auth.password_reset_request_failed', 'user', null, 'warning', ['reason' => 'unavailable_or_rate_limited'], 'warning');
                 return false;
             }
             $windowStart = $now->sub(new DateInterval('PT' . self::REQUEST_WINDOW_SECONDS . 'S'))->format('Y-m-d H:i:s');
@@ -33,6 +37,7 @@ final class PasswordResetService
             $count->execute(['user_id' => $user['id'], 'window_start' => $windowStart]);
             if ((int) $count->fetchColumn() >= self::REQUEST_LIMIT) {
                 $database->rollBack();
+                AuditLog::record($database, null, 'auth.password_reset_request_failed', 'user', null, 'warning', ['reason' => 'unavailable_or_rate_limited'], 'warning');
                 return false;
             }
             $invalidate = $database->prepare('UPDATE password_reset_tokens SET used_at = :used_at WHERE user_id = :user_id AND used_at IS NULL');
@@ -60,20 +65,27 @@ final class PasswordResetService
             $invalidateFailed = $database->prepare('UPDATE password_reset_tokens SET used_at = :used_at WHERE user_id = :user_id AND token_hash = :token_hash AND used_at IS NULL');
             $invalidateFailed->execute(['used_at' => gmdate('Y-m-d H:i:s'), 'user_id' => $user['id'], 'token_hash' => hash('sha256', $token)]);
             error_log('[admitflow] Password reset delivery failed; the generated token was invalidated.');
+            AuditLog::record($database, ['id' => (int) $user['id']], 'auth.password_reset_request_failed', 'user', (int) $user['id'], 'failure', ['reason' => 'delivery_failed'], 'warning');
+            return false;
         }
 
-        return $delivered;
+        AuditLog::record($database, ['id' => (int) $user['id']], 'auth.password_reset_requested', 'user', (int) $user['id'], 'success', [], 'notice');
+
+        return true;
     }
 
     public static function reset(PDO $database, string $token, string $password, string $confirmation): array
     {
         if (!SecurityPolicy::passwordLengthIsValid($password)) {
+            AuditLog::record($database, null, 'auth.password_reset_failed', 'user', null, 'failure', ['reason' => 'password_policy'], 'warning');
             return ['ok' => false, 'message' => 'Choose a password between 10 and 200 characters.'];
         }
         if (!hash_equals($password, $confirmation)) {
+            AuditLog::record($database, null, 'auth.password_reset_failed', 'user', null, 'failure', ['reason' => 'password_confirmation'], 'warning');
             return ['ok' => false, 'message' => 'The password confirmation does not match.'];
         }
         if (!preg_match('/^[a-f0-9]{64}$/', $token)) {
+            AuditLog::record($database, null, 'auth.password_reset_failed', 'user', null, 'failure', ['reason' => 'malformed_token'], 'warning');
             return ['ok' => false, 'message' => 'This reset link is invalid or expired. Request a new one.'];
         }
 
@@ -87,6 +99,7 @@ final class PasswordResetService
             $reset = $lookup->fetch();
             if (!is_array($reset)) {
                 $database->rollBack();
+                AuditLog::record($database, null, 'auth.password_reset_failed', 'user', null, 'failure', ['reason' => 'invalid_or_expired'], 'warning');
                 return ['ok' => false, 'message' => 'This reset link is invalid or expired. Request a new one.'];
             }
 
@@ -94,14 +107,14 @@ final class PasswordResetService
             $updateUser->execute(['password_hash' => password_hash($password, PASSWORD_DEFAULT), 'user_id' => $reset['user_id']]);
             if ($updateUser->rowCount() !== 1) {
                 $database->rollBack();
+                AuditLog::record($database, null, 'auth.password_reset_failed', 'user', null, 'failure', ['reason' => 'account_unavailable'], 'warning');
                 return ['ok' => false, 'message' => 'This reset link is invalid or expired. Request a new one.'];
             }
             $markUsed = $database->prepare('UPDATE password_reset_tokens SET used_at = :used_at WHERE id = :id AND used_at IS NULL');
             $markUsed->execute(['used_at' => $now, 'id' => $reset['id']]);
             $invalidateOther = $database->prepare('UPDATE password_reset_tokens SET used_at = :used_at WHERE user_id = :user_id AND id <> :id AND used_at IS NULL');
             $invalidateOther->execute(['used_at' => $now, 'user_id' => $reset['user_id'], 'id' => $reset['id']]);
-            $audit = $database->prepare('INSERT INTO audit_logs (user_id, actor_label, action, entity_type, entity_id, outcome, severity, ip_address) SELECT id, full_name, \'auth.password_reset\', \'user\', id, \'success\', \'notice\', :ip FROM users WHERE id = :user_id');
-            $audit->execute(['user_id' => $reset['user_id'], 'ip' => request_ip()]);
+            AuditLog::record($database, ['id' => (int) $reset['user_id']], 'auth.password_reset', 'user', (int) $reset['user_id'], 'success', [], 'notice');
             $database->commit();
 
             return ['ok' => true, 'message' => 'Your password has been changed. Sign in with the new password.'];

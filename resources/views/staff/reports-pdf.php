@@ -8,7 +8,7 @@ $filterLabels = ['q' => 'Search', 'status' => 'Status', 'program_id' => 'Program
 <meta charset="utf-8">
 <title>AdmitFlow Reports and Print Center</title>
 <style>
-@page { size: A4 landscape; margin: 14mm; }
+@page { size: A4 landscape; margin: 12mm; }
 body { color: #172d3a; font-family: DejaVu Sans, sans-serif; font-size: 9px; }
 h1 { margin: 0 0 4px; font-size: 22px; color: #16334a; }
 h2 { margin: 0 0 8px; font-size: 14px; color: #16334a; }

@@ -90,6 +90,10 @@ With `$env:ADMITFLOW_APP_ENV = 'local'` set in PowerShell, create a reviewer or 
 
 Apache must point its document root to the project's `public/` directory and allow the included rewrite rules. Never make the project root, `config/`, or `storage/` publicly accessible. Production requires HTTPS, a supported PHP runtime, a least-privilege DB account, private file storage, protected secrets, and reviewed Apache/PHP settings.
 
+## HTTPS in production
+
+In production, point Apache at `public/` and allow `.htaccess` rewrites; non-loopback HTTP requests are redirected to HTTPS. If TLS terminates at a trusted reverse proxy, configure it to overwrite `X-Forwarded-Proto` and set `ADMITFLOW_TRUST_PROXY=1` for PHP so session cookies are marked Secure. Leave this setting at `0` unless requests can only reach the app through that trusted proxy. HSTS is sent only for effective HTTPS requests outside local mode and on non-loopback hosts. Local development at `http://127.0.0.1:8000` remains HTTP and receives no HSTS.
+
 ## Database and records
 
 `database/schema.sql` is the current 20-table MySQL/MariaDB schema. It includes users/profiles, academic years/programs/requirements, applications, versioned documents/reviews, assignments, notes, interviews/enrollment, announcements/notifications, status history, audit events, password tokens, login attempts, backup metadata, and settings.

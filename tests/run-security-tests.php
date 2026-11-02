@@ -30,6 +30,12 @@ $assert = static function (bool $condition, string $message) use (&$tests, &$fai
     if (!$condition) $failures[] = $message;
 };
 
+$assert(request_is_https(['HTTPS' => 'on'], '0', '0'), 'direct HTTPS marks the request secure for session cookies');
+$assert(request_is_https(['HTTPS' => 'off', 'HTTP_X_FORWARDED_PROTO' => 'https'], '1', '0'), 'trusted proxy HTTPS is honored when proxy trust is enabled');
+$assert(!request_is_https(['HTTPS' => 'off', 'HTTP_X_FORWARDED_PROTO' => 'https'], '0', '0'), 'forwarded HTTPS is ignored when proxy trust is disabled');
+$assert(!request_is_https(['HTTPS' => 'off', 'HTTP_HOST' => '127.0.0.1:8000'], '0', '0'), 'local HTTP remains non-HTTPS without the force-cookie override');
+$assert(request_is_https(['HTTPS' => 'off'], '0', '1'), 'force-secure-cookie setting continues to mark the session cookie secure');
+
 $_SERVER['REMOTE_ADDR'] = '192.0.2.10';
 $_SERVER['HTTP_X_FORWARDED_FOR'] = '198.51.100.77';
 $_SERVER['HTTP_FORWARDED'] = 'for=203.0.113.8';
@@ -49,11 +55,13 @@ if (!in_array('sqlite', PDO::getAvailableDrivers(), true)) {
 }
 
 $database = new PDO('sqlite::memory:', null, null, [PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION, PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC]);
-$database->exec('CREATE TABLE users (id INTEGER PRIMARY KEY AUTOINCREMENT, full_name TEXT NOT NULL, email TEXT NOT NULL UNIQUE, password_hash TEXT NOT NULL, role TEXT NOT NULL, account_status TEXT NOT NULL, last_login_at TEXT NULL, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)');
+$database->sqliteCreateFunction('UTC_TIMESTAMP', static fn (): string => gmdate('Y-m-d H:i:s'));
+$database->exec('CREATE TABLE users (id INTEGER PRIMARY KEY AUTOINCREMENT, full_name TEXT NOT NULL, email TEXT NOT NULL UNIQUE, password_hash TEXT NOT NULL, role TEXT NOT NULL, account_status TEXT NOT NULL DEFAULT \'active\', last_login_at TEXT NULL, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)');
 $database->exec('CREATE TABLE student_profiles (user_id INTEGER PRIMARY KEY, mobile_number TEXT NULL, date_of_birth TEXT NULL, address_line TEXT NULL, municipality TEXT NULL, province TEXT NULL)');
 $database->exec('CREATE TABLE password_reset_tokens (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER NOT NULL, token_hash TEXT NOT NULL UNIQUE, expires_at TEXT NOT NULL, used_at TEXT NULL, created_at TEXT DEFAULT CURRENT_TIMESTAMP)');
 $database->exec('CREATE TABLE login_attempts (id INTEGER PRIMARY KEY AUTOINCREMENT, email_normalized TEXT NOT NULL, ip_address TEXT NULL, was_successful INTEGER NOT NULL, attempted_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)');
-$database->exec('CREATE TABLE audit_logs (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER NULL, actor_label TEXT NOT NULL, action TEXT NOT NULL, entity_type TEXT NULL, entity_id INTEGER NULL, outcome TEXT NOT NULL, severity TEXT NOT NULL, ip_address TEXT NULL)');
+$database->exec('CREATE TABLE audit_logs (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER NULL, actor_label TEXT NOT NULL, action TEXT NOT NULL, entity_type TEXT NULL, entity_id INTEGER NULL, outcome TEXT NOT NULL, severity TEXT NOT NULL, ip_address TEXT NULL, request_id TEXT NULL, details TEXT NULL, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)');
+$database->exec('ALTER TABLE student_profiles ADD COLUMN privacy_consent_at TEXT NULL');
 
 $insertUser = $database->prepare('INSERT INTO users (full_name,email,password_hash,role,account_status) VALUES (:name,:email,:password_hash,:role,\'active\')');
 $insertUser->execute(['name' => 'Fixture One', 'email' => 'one@example.test', 'password_hash' => password_hash('OldPass!2345', PASSWORD_DEFAULT), 'role' => 'student']);
@@ -64,6 +72,9 @@ $insertUser->execute(['name' => 'Fixture Reviewer', 'email' => 'reviewer@example
 $reviewerId = (int) $database->lastInsertId();
 $insertUser->execute(['name' => 'Fixture Admin', 'email' => 'admin@example.test', 'password_hash' => password_hash('AdminPass!2345', PASSWORD_DEFAULT), 'role' => 'admin']);
 $adminId = (int) $database->lastInsertId();
+$registrationResult = AuthService::register($database, ['full_name' => 'Audit Registration', 'email' => 'audit.registration@example.test', 'password' => 'AuditPass!23456', 'password_confirmation' => 'AuditPass!23456', 'privacy_consent' => '1']);
+$registrationAudit = $database->query("SELECT user_id, actor_label, details FROM audit_logs WHERE action='account.registered' ORDER BY id DESC LIMIT 1")->fetch();
+$assert($registrationResult['ok'] && (int) $database->query("SELECT COUNT(*) FROM audit_logs WHERE action='account.registered'")->fetchColumn() === 1 && (int) $registrationAudit['user_id'] === (int) $database->query("SELECT id FROM users WHERE email='audit.registration@example.test'")->fetchColumn() && !str_contains((string) $registrationAudit['details'], 'AuditPass'), 'successful registration creates exactly one safe actor-attributed audit event');
 
 $assert(SecurityPolicy::csrfMatches('abc123', 'abc123'), 'valid CSRF token accepted');
 $assert(!SecurityPolicy::csrfMatches('abc123', 'wrong'), 'invalid CSRF token rejected');
@@ -669,12 +680,12 @@ $academicSettingsViewSource = file_get_contents(dirname(__DIR__) . '/resources/v
 $staffUsersViewSource = file_get_contents(dirname(__DIR__) . '/resources/views/staff/users.php');
 $applicationModalScriptSource = file_get_contents(dirname(__DIR__) . '/public/assets/js/app.js');
 $printStylesSource = file_get_contents(dirname(__DIR__) . '/public/assets/css/app.css');
-$assert(is_string($passwordControllerSource) && str_contains($passwordControllerSource, 'if (!in_array($user[\'role\'], [\'reviewer\', \'admin\'], true))') && str_contains($passwordControllerSource, 'StaffService::applications($database, $user, $_GET, true, true)') && is_string($reportViewSource) && str_contains($reportViewSource, 'data-print'), 'reviewers and administrators share the authorized report route and print action');
-$assert(is_string($printStylesSource) && str_contains($printStylesSource, '@page { size: A4;') && str_contains($printStylesSource, '.app-sidebar, .app-sidebar-backdrop, .app-topbar') && str_contains($printStylesSource, '.staff-table thead { display: table-header-group; }') && str_contains($printStylesSource, '.staff-table tr { break-inside: avoid;'), 'print rules hide application controls while preserving paginated report content');
+$assert(is_string($passwordControllerSource) && str_contains($passwordControllerSource, 'if (!in_array($user[\'role\'], [\'reviewer\', \'admin\'], true))') && str_contains($passwordControllerSource, 'StaffService::applications($database, $user, $reportInput, true, !$printView)') && str_contains($passwordControllerSource, 'recordReportPrintPreview($database, $user, $report[\'filters\']') && is_string($reportViewSource) && str_contains($reportViewSource, 'data-print-preview-trigger') && str_contains($reportViewSource, 'print-preview-modal.php'), 'reviewers and administrators share the authorized report route and shared print preview action');
+$assert(is_string($printStylesSource) && str_contains($printStylesSource, 'size: A4 portrait;') && str_contains($printStylesSource, '@page report-landscape') && str_contains($printStylesSource, 'margin: 12mm;') && str_contains($printStylesSource, '.app-sidebar, .app-sidebar-backdrop, .app-topbar') && str_contains($printStylesSource, 'thead { display: table-header-group; }') && str_contains($printStylesSource, 'tr { break-inside: avoid;'), 'print rules hide application controls, use named A4 pages, and preserve table pagination behavior');
 $assert(is_string($studentPrintViewSource) && is_string($studentPrintContentSource) && str_contains($studentPrintContentSource, 'Draft application summary') && str_contains($studentPrintContentSource, 'application has been accepted') && str_contains($studentPrintContentSource, 'recorded as complete') && !str_contains($studentPrintContentSource, 'storage_name') && !str_contains($studentPrintContentSource, 'password_reset') && str_contains($studentPrintViewSource, 'print-document-content.php'), 'shared student document content labels drafts and separate outcomes without private storage or security data');
-$assert(is_string($passwordControllerSource) && str_contains($passwordControllerSource, 'require_student()') && str_contains($passwordControllerSource, 'ApplicationService::printableSummary($database, (int) $user[\'id\'])') && str_contains($passwordControllerSource, 'Cache-Control: private, no-store') && is_string($studentPortalSource) && str_contains($studentPortalSource, 'data-print') && str_contains($studentPortalSource, 'data-bs-target="#applicationSummaryModal"'), 'student print uses direct window.print from portal document modals with owner-protected routes');
+$assert(is_string($passwordControllerSource) && str_contains($passwordControllerSource, 'require_student()') && str_contains($passwordControllerSource, 'ApplicationService::printableSummary($database, (int) $user[\'id\'])') && str_contains($passwordControllerSource, 'Cache-Control: private, no-store') && str_contains($passwordControllerSource, "header('X-Frame-Options: SAMEORIGIN');") && is_string($studentPortalSource) && str_contains($studentPortalSource, 'data-print-preview-trigger') && str_contains($studentPortalSource, 'data-preview-url="/application/print?preview=1"') && str_contains($studentPortalSource, 'print-preview-modal.php'), 'student printing reuses the shared iframe modal and owner-protected routes');
 $assert(is_string($academicSettingsViewSource) && str_contains($academicSettingsViewSource, "'id' => 'createProgramModal'") && str_contains($academicSettingsViewSource, "'id' => 'createYearModal'") && str_contains($academicSettingsViewSource, "'id' => 'createRequirementModal'") && str_contains($academicSettingsViewSource, 'name="_csrf"') && str_contains($academicSettingsViewSource, 'data-submit-once') && str_contains($academicSettingsViewSource, "'action' => '/staff/requirement/save'"), 'academic create forms use Bootstrap modals and preserve CSRF-protected existing form posts');
-$assert(is_string($staffUsersViewSource) && str_contains($staffUsersViewSource, 'id="createStaffAccountModal"') && str_contains($staffUsersViewSource, 'action="/staff/user/save"') && str_contains($staffUsersViewSource, 'name="role"') && str_contains($staffUsersViewSource, 'name="_csrf"') && str_contains($staffUsersViewSource, 'data-submit-once') && is_string($applicationModalScriptSource) && str_contains($applicationModalScriptSource, 'data-create-form-modal'), 'staff account modal retains role assignment, CSRF, existing endpoint, and duplicate-submit prevention');
+$assert(is_string($staffUsersViewSource) && str_contains($staffUsersViewSource, 'data-drawer-add="#accountEditDrawer"') && str_contains($staffUsersViewSource, 'action="/staff/user/save"') && str_contains($staffUsersViewSource, 'action="/staff/user/delete"') && str_contains($staffUsersViewSource, 'name="role"') && str_contains($staffUsersViewSource, 'name="_csrf"') && str_contains($staffUsersViewSource, 'data-submit-once') && str_contains($staffUsersViewSource, 'Deactivate') && is_string($applicationModalScriptSource) && str_contains($applicationModalScriptSource, 'data-create-form-modal'), 'staff account drawer and row actions retain role assignment, CSRF, deletion/deactivation, and duplicate-submit prevention');
 $assert(is_string($profileViewSource) && str_contains($profileViewSource, 'name="full_name"') && str_contains($profileViewSource, 'Read-only') && !str_contains($profileViewSource, 'password_hash'), 'profile page supports validated display-name edit and keeps email read-only without sensitive data');
 $assert(is_string($profileViewSource) && str_contains($profileViewSource, 'profile-settings-grid') && str_contains($profileViewSource, 'data-avatar-preview') && str_contains($profileViewSource, 'data-avatar-input') && str_contains($profileViewSource, 'profile-name-error') && str_contains($profileViewSource, 'href="/account/password"') && str_contains($profileViewSource, 'href="/notifications"') && !str_contains($profileViewSource, $retiredThemeAttribute) && !str_contains($profileViewSource, $retiredDensityAttribute) && !str_contains($profileViewSource, $retiredPreferenceTitle) && !str_contains($profileViewSource, $retiredBrowserLabel), 'profile retains identity/account tools while omitting the retired appearance panel and browser label');
 $assert(is_string($profileViewSource) && str_contains($profileViewSource, 'data-profile-card') && str_contains($profileViewSource, 'data-profile-view') && str_contains($profileViewSource, 'data-profile-edit') && str_contains($profileViewSource, 'data-profile-edit-toggle') && str_contains($profileViewSource, 'data-profile-cancel') && str_contains($profileViewSource, 'data-profile-saved-value') && str_contains($profileViewSource, 'Save Changes') && substr_count($profileViewSource, 'action="/settings/profile"') === 1, 'profile uses one card and one form with read-only/edit modes, reversible baseline values, and save/cancel actions');
@@ -703,7 +714,7 @@ $assert(is_string($profileScript) && str_contains($profileScript, 'const discard
 $assert(is_string($profileScript) && str_contains($profileScript, 'URL.createObjectURL(file)') && str_contains($profileScript, 'URL.revokeObjectURL(previewUrl)') && str_contains($profileScript, 'form[data-submit-once]') && str_contains($profileScript, 'Choose a JPEG or PNG image no larger than 2 MB.'), 'avatar preview validates client-side type/size and releases object URLs while forms prevent duplicate submissions');
 $assert(str_contains($passwordControllerSource, "\$_SESSION['profile_form_name'] = (string) (\$_POST['full_name'] ?? '')") && str_contains($passwordControllerSource, "\$_SESSION['profile_form_error'] = \$result['message']") && str_contains($passwordControllerSource, "unset(\$_SESSION['profile_form_name'], \$_SESSION['profile_form_error'])"), 'invalid profile names retain submitted input and a field-level server validation message across redirect');
 $assert(is_string($settingsIndexSource) && !str_contains($settingsIndexSource, $retiredThemeAttribute) && !str_contains($settingsIndexSource, $retiredDensityAttribute) && !str_contains($settingsIndexSource, $retiredPreferenceStatus) && !str_contains($settingsIndexSource, 'href="/settings/notifications"'), 'Settings landing page contains no removed appearance controls or unsupported notification-preference route');
-$assert(is_string($profileScript) && !str_contains($profileScript, 'localStorage') && !str_contains($profileScript, $retiredThemeAttribute) && !str_contains($profileScript, $retiredDensityAttribute) && is_string($printStylesSource) && !str_contains($printStylesSource, 'data-resolved-theme') && !str_contains($passwordControllerSource, 'data-settings-user-id'), 'removed appearance preferences have no persistence handler, layout hook, or exclusive theme styling');
+$assert(is_string($profileScript) && str_contains($profileScript, 'window.localStorage.getItem(storageKey)') && !str_contains($profileScript, $retiredThemeAttribute) && !str_contains($profileScript, $retiredDensityAttribute) && is_string($printStylesSource) && !str_contains($printStylesSource, 'data-resolved-theme') && !str_contains($passwordControllerSource, 'data-settings-user-id'), 'sidebar expansion may persist while removed appearance preferences have no persistence handler or theme layout hooks');
 $assert(is_string($passwordSettingsSource) && str_contains($passwordSettingsSource, 'security-settings-page') && str_contains($passwordSettingsSource, 'Security Settings') && str_contains($passwordSettingsSource, 'Protect your AdmitFlow account') && str_contains($passwordSettingsSource, 'security-settings-grid') && str_contains($passwordSettingsSource, 'name="_csrf"') && str_contains($passwordSettingsSource, 'action="/account/password"') && str_contains($passwordSettingsSource, 'name="current_password"') && str_contains($passwordSettingsSource, 'name="new_password"') && str_contains($passwordSettingsSource, 'name="password_confirmation"') && str_contains($passwordSettingsSource, 'Update Password') && str_contains($passwordSettingsSource, 'Recent sign-in attempts') && str_contains($passwordSettingsSource, 'not a list of active sessions') && str_contains($passwordSettingsSource, 'data-password-strength') && str_contains($passwordSettingsSource, 'data-password-toggle') && str_contains($passwordSettingsSource, 'data-submit-once') && is_string($passwordControllerSource) && str_contains($passwordControllerSource, 'AuthService::changePassword') && str_contains($passwordControllerSource, 'SecurityPolicy::passwordLengthLimits()'), 'Security Settings has a distinct responsive layout while preserving the CSRF-protected password flow and truthful sign-in history');
 $assert(is_string($profileScript) && str_contains($profileScript, 'new TextEncoder().encode(strengthPassword.value).length') && str_contains($profileScript, 'strengthPassword.setCustomValidity(lengthMessage)') && str_contains($profileScript, 'strengthConfirmation.setCustomValidity(matchMessage)'), 'password form field feedback matches server-side byte limits and confirmation validation');
 $assert(is_string($systemSettingsSource) && str_contains($systemSettingsSource, 'href="/staff/academic/programs"') && str_contains($systemSettingsSource, 'href="/staff/academic/years"') && str_contains($systemSettingsSource, 'href="/staff/academic/requirements"') && str_contains($systemSettingsSource, 'href="/staff/users/administrators"') && str_contains($systemSettingsSource, 'href="/staff/users/staff"') && str_contains($systemSettingsSource, 'href="/staff/users/students"') && str_contains($systemSettingsSource, 'href="/staff/audit"') && str_contains($systemSettingsSource, 'href="/staff/backups"') && str_contains($systemSettingsSource, '$systemInfo[\'version\']') && str_contains($systemSettingsSource, '$systemInfo[\'password_reset_smtp\']') && str_contains($systemSettingsSource, 'does not enable email notifications') && str_contains($systemSettingsSource, 'Admissions configuration') && str_contains($systemSettingsSource, 'Access and data protection'), 'System Settings links directly to the six dedicated admin pages and retains existing audit/backup routes');
@@ -730,7 +741,7 @@ $staffPasswordQuery = $database->prepare('SELECT password_hash FROM users WHERE 
 $staffPasswordQuery->execute(['user_id' => $staffAccount['user_id']]);
 $assert($staffPasswordSet['ok'] && password_verify('FirstLoginPass123', (string) $staffPasswordQuery->fetchColumn()) && !$staffPasswordReplay['ok'], 'staff member can set an initial password once using the setup link');
 $staffAccountViewSource = file_get_contents(dirname(__DIR__) . '/resources/views/staff/users.php');
-$assert(is_string($staffAccountViewSource) && str_contains($staffAccountViewSource, '$userCategories') && str_contains($staffAccountViewSource, 'name="role"') && str_contains($staffAccountViewSource, 'name="account_status"') && str_contains($staffAccountViewSource, 'name="q"') && str_contains($staffAccountViewSource, 'One-time password setup link') && str_contains($staffAccountViewSource, 'data-confirm="Apply this role and account-status change?"'), 'user administration exposes role/status/search filters, data-driven category sections, and existing access-change confirmation');
+$assert(is_string($staffAccountViewSource) && str_contains($staffAccountViewSource, '$userCategories') && str_contains($staffAccountViewSource, 'name="role"') && str_contains($staffAccountViewSource, 'name="account_status"') && str_contains($staffAccountViewSource, 'name="q"') && str_contains($staffAccountViewSource, 'One-time password setup link') && str_contains($staffAccountViewSource, "'confirm_edit' => 'Apply this role and account-status change?'"), 'user administration exposes role/status/search filters, data-driven category sections, and existing access-change confirmation');
 $_SESSION = [];
 $frontController = file_get_contents(dirname(__DIR__) . '/public/index.php');
 $backupIntegrityRequire = is_string($frontController) ? strpos($frontController, "require dirname(__DIR__) . '/app/BackupIntegrity.php';") : false;
@@ -795,11 +806,11 @@ $dashboardData = [
     'reviewers' => [],
 ];
 $adminDashboardMarkup = $renderStaffDashboard($dashboardData);
-$assert(str_contains($adminDashboardMarkup, 'class="is-active" href="/admin"') && str_contains($adminDashboardMarkup, 'href="/staff/users/administrators"') && str_contains($adminDashboardMarkup, 'href="/staff/users/staff"') && str_contains($adminDashboardMarkup, 'href="/staff/users/students"') && str_contains($adminDashboardMarkup, 'href="/staff/academic/programs"') && str_contains($adminDashboardMarkup, 'href="/staff/academic/years"') && str_contains($adminDashboardMarkup, 'href="/staff/academic/requirements"') && str_contains($adminDashboardMarkup, 'href="/staff/audit"') && str_contains($adminDashboardMarkup, 'href="/staff/backups"') && str_contains($adminDashboardMarkup, 'href="/staff/announcements"') && str_contains($adminDashboardMarkup, 'Staff Fixture Notice'), 'admin dashboard preserves destinations, links the six dedicated admin pages, and displays the active staff notice');
+$assert(str_contains($adminDashboardMarkup, 'class="is-active" href="/admin"') && str_contains($adminDashboardMarkup, 'href="/admin/applications"') && str_contains($adminDashboardMarkup, 'href="/staff/announcements"') && str_contains($adminDashboardMarkup, 'href="/staff/users/administrators"') && str_contains($adminDashboardMarkup, 'href="/staff/academic/programs"') && str_contains($adminDashboardMarkup, 'href="/staff/audit"') && str_contains($adminDashboardMarkup, 'href="/staff/backups"') && str_contains($adminDashboardMarkup, 'Staff Fixture Notice'), 'admin dashboard preserves its current operations navigation and displays the active staff notice');
 $dashboardData['user'] = ['id'=>3,'full_name'=>'Fixture Reviewer','role'=>'reviewer'];
 $dashboardData['adminDashboard'] = false;
 $reviewerDashboardMarkup = $renderStaffDashboard($dashboardData);
-$assert(str_contains($reviewerDashboardMarkup, 'class="is-active" href="/staff"') && !str_contains($reviewerDashboardMarkup, 'href="/staff/users"') && !str_contains($reviewerDashboardMarkup, 'href="/staff/backups"') && !str_contains($reviewerDashboardMarkup, 'href="/staff/announcements"') && str_contains($reviewerDashboardMarkup, 'href="/announcements"') && str_contains($reviewerDashboardMarkup, 'Staff Fixture Notice'), 'reviewer dashboard displays staff announcements and reader access but not Admin-only management');
+$assert(str_contains($reviewerDashboardMarkup, 'class="is-active" href="/staff"') && str_contains($reviewerDashboardMarkup, 'href="/staff/applications"') && !str_contains($reviewerDashboardMarkup, 'href="/staff/users"') && !str_contains($reviewerDashboardMarkup, 'href="/staff/backups"') && !str_contains($reviewerDashboardMarkup, 'href="/staff/announcements"') && str_contains($reviewerDashboardMarkup, 'href="/announcements"') && str_contains($reviewerDashboardMarkup, 'Staff Fixture Notice'), 'reviewer dashboard retains queue and reader links without Admin-only management');
 $assert(substr_count($adminDashboardMarkup, '<canvas data-chart=') === 6 && str_contains($adminDashboardMarkup, 'data-chart="monthly"') && str_contains($adminDashboardMarkup, 'data-chart="statuses"') && str_contains($adminDashboardMarkup, 'data-chart="programs"') && str_contains($adminDashboardMarkup, 'data-chart="submitted-reviewed"') && str_contains($adminDashboardMarkup, 'data-chart="intake-progress"') && str_contains($adminDashboardMarkup, 'data-chart="review-time"'), 'dashboard renders exactly the six required chart canvases');
 $chartRendererSource = file_get_contents(dirname(__DIR__) . '/public/assets/js/app.js');
 $assert(is_string($chartRendererSource) && str_contains($chartRendererSource, "kind === 'submitted-reviewed'") && str_contains($chartRendererSource, "kind === 'intake-progress'") && str_contains($chartRendererSource, "kind === 'review-time'"), 'shared Chart.js renderer handles each newly added chart type');
@@ -950,7 +961,8 @@ $gateBlocked = AccountSettingsService::applicationStartGate($profileGateDb, 1);
 $assert(!$gateBlocked['allowed'] && isset($gateBlocked['missing']['mobile_number'], $gateBlocked['missing']['address_line']), 'server profile gate blocks incomplete applicant and returns missing labels');
 $gateValidProfile = ['full_name' => 'Gate Applicant', 'mobile_number' => '09171234567', 'date_of_birth' => '2005-05-10', 'address_line' => '11 Main Road, Barangay Uno', 'municipality' => 'Test City', 'province' => 'Test Province', 'emergency_contact_name' => 'Emergency Person', 'emergency_contact_number' => '09171234568'];
 $gateSave = AccountSettingsService::updateApplicantProfile($profileGateDb, ['id' => 1, 'role' => 'student', 'full_name' => 'Gate Applicant'], $gateValidProfile);
-$assert($gateSave['ok'] && AccountSettingsService::applicationStartGate($profileGateDb, 1)['allowed'], 'applicant can complete own profile and pass server gate');
+$gateProfileAuditCount = (int) $profileGateDb->query("SELECT COUNT(*) FROM audit_logs WHERE action='account.applicant_profile_updated' AND entity_id=1")->fetchColumn();
+$assert($gateSave['ok'] && AccountSettingsService::applicationStartGate($profileGateDb, 1)['allowed'] && $gateProfileAuditCount === 1, 'applicant can complete own profile, pass server gate, and create one audit event');
 $otherBefore = (string) $profileGateDb->query('SELECT full_name FROM users WHERE id=2')->fetchColumn();
 $foreignProfileSave = AccountSettingsService::updateApplicantProfile($profileGateDb, ['id' => 1, 'role' => 'student', 'full_name' => 'Gate Applicant'], array_merge($gateValidProfile, ['full_name' => 'Unauthorized Change']));
 $assert($foreignProfileSave['ok'] && (string) $profileGateDb->query('SELECT full_name FROM users WHERE id=2')->fetchColumn() === $otherBefore, 'authenticated profile save updates only its supplied actor id and does not alter another applicant');
@@ -961,10 +973,10 @@ $workflowDb = new PDO('sqlite::memory:', null, null, [PDO::ATTR_ERRMODE => PDO::
 $workflowDb->sqliteCreateFunction('UTC_TIMESTAMP', static fn (): string => gmdate('Y-m-d H:i:s'));
 $workflowDb->exec('CREATE TABLE users (id INTEGER PRIMARY KEY, full_name TEXT NOT NULL, email TEXT NOT NULL, role TEXT NOT NULL, account_status TEXT NOT NULL, created_at TEXT DEFAULT CURRENT_TIMESTAMP)');
 $workflowDb->exec('CREATE TABLE student_profiles (user_id INTEGER PRIMARY KEY, mobile_number TEXT, date_of_birth TEXT, address_line TEXT, municipality TEXT, province TEXT, emergency_contact_name TEXT, emergency_contact_number TEXT, privacy_consent_at TEXT)');
-$workflowDb->exec('CREATE TABLE academic_programs (id INTEGER PRIMARY KEY, code TEXT, name TEXT, is_active INTEGER NOT NULL)');
-$workflowDb->exec('CREATE TABLE academic_years (id INTEGER PRIMARY KEY, label TEXT, starts_on TEXT, ends_on TEXT NULL, application_deadline TEXT NULL, is_open INTEGER NOT NULL)');
+$workflowDb->exec('CREATE TABLE academic_programs (id INTEGER PRIMARY KEY, code TEXT, name TEXT, description TEXT NULL, is_active INTEGER NOT NULL, created_at TEXT, updated_at TEXT)');
+$workflowDb->exec('CREATE TABLE academic_years (id INTEGER PRIMARY KEY, label TEXT, starts_on TEXT, ends_on TEXT NULL, application_deadline TEXT NULL, is_open INTEGER NOT NULL, created_at TEXT, updated_at TEXT)');
 $workflowDb->exec('CREATE TABLE applications (id INTEGER PRIMARY KEY AUTOINCREMENT, reference_number TEXT UNIQUE, student_id INTEGER NOT NULL, academic_program_id INTEGER, academic_year_id INTEGER, preferred_campus TEXT, previous_school TEXT, senior_high_strand TEXT, applicant_profile_snapshot TEXT NULL, status TEXT NOT NULL DEFAULT \'draft\', submitted_at TEXT, deleted_at TEXT, updated_at TEXT DEFAULT CURRENT_TIMESTAMP)');
-$workflowDb->exec('CREATE TABLE admission_requirements (id INTEGER PRIMARY KEY, code TEXT, name TEXT, instructions TEXT, academic_program_id INTEGER, academic_year_id INTEGER, allowed_extensions TEXT, max_file_size_bytes INTEGER, is_active INTEGER, is_required INTEGER, sort_order INTEGER)');
+$workflowDb->exec('CREATE TABLE admission_requirements (id INTEGER PRIMARY KEY, code TEXT, name TEXT, instructions TEXT, academic_program_id INTEGER, academic_year_id INTEGER, allowed_extensions TEXT, max_file_size_bytes INTEGER, is_active INTEGER, is_required INTEGER, sort_order INTEGER, created_at TEXT, updated_at TEXT)');
 $workflowDb->exec('CREATE TABLE application_documents (id INTEGER PRIMARY KEY AUTOINCREMENT, application_id INTEGER, requirement_id INTEGER, version INTEGER, storage_name TEXT, original_name TEXT, detected_mime_type TEXT, file_size_bytes INTEGER, sha256 TEXT, review_status TEXT DEFAULT \'pending\', uploaded_by INTEGER, uploaded_at TEXT DEFAULT CURRENT_TIMESTAMP, is_current INTEGER DEFAULT 1)');
 $workflowDb->exec('CREATE TABLE document_reviews (id INTEGER PRIMARY KEY AUTOINCREMENT, document_id INTEGER, reviewer_id INTEGER, decision TEXT, feedback TEXT, reviewed_at TEXT DEFAULT CURRENT_TIMESTAMP)');
 $workflowDb->exec('CREATE TABLE reviewer_assignments (id INTEGER PRIMARY KEY AUTOINCREMENT, application_id INTEGER, reviewer_id INTEGER, assigned_by INTEGER, unassigned_at TEXT)');
@@ -1216,7 +1228,7 @@ $assert(!$missingScheduleValidation['ok'] && isset($missingScheduleValidation['e
 $editDraftValidation = AnnouncementService::validateSaveInput(['title' => 'Edited draft', 'body' => 'Still a draft.', 'audience' => 'staff', 'is_published' => '0'], false, $scheduleNow);
 $assert($editDraftValidation['ok'] && $editDraftValidation['values']['is_published'] === 0, 'existing edit workflow continues to preserve draft publication state');
 $announcementViewSource = file_get_contents(dirname(__DIR__) . '/resources/views/staff/announcements.php');
-$assert(is_string($announcementViewSource) && str_contains($announcementViewSource, 'Create Announcement') && str_contains($announcementViewSource, 'data-bs-toggle="modal"') && str_contains($announcementViewSource, 'aria-labelledby="createAnnouncementTitle"') && str_contains($announcementViewSource, 'data-announcement-mode') && str_contains($announcementViewSource, 'Schedule Announcement') && str_contains($announcementViewSource, 'data-confirm="Delete this announcement?'), 'Announcement Center renders accessible create modal modes and retains destructive-action confirmation');
+$assert(is_string($announcementViewSource) && str_contains($announcementViewSource, 'Create Announcement') && str_contains($announcementViewSource, 'data-drawer-add="#announcementFormDrawer"') && str_contains($announcementViewSource, 'data-announcement-mode') && str_contains($announcementViewSource, 'Schedule for later') && str_contains($announcementViewSource, 'data-confirm="Delete this announcement?'), 'Announcement Center renders accessible create drawer modes and retains destructive-action confirmation');
 $announcements = $announcementPage['rows'];
 $pagination = $announcementPage['pagination'];
 $activeState = '';
@@ -1347,6 +1359,41 @@ foreach ($sharedFilterViews as $filterViewSource) {
 $assert($sharedFilterContract && str_contains($sharedFilterViews[5], 'data-advanced-panel') && str_contains($sharedFilterViews[6], 'data-advanced-panel') && str_contains($sharedFilterViews[7], 'data-advanced-panel') && str_contains($sharedFilterViews[8], 'data-filter-change'), 'relevant queue, settings, user, announcement, audit, backup, report, notification, sign-in, and application history views share filtering interactions with page-specific controls');
 $assert(StaffService::detail($workflowDb, $reviewerOne, 2) !== null && StaffService::detail($workflowDb, $reviewerTwo, 2) === null, 'direct application ID access follows reviewer assignment scope');
 $assert(StaffService::detail($workflowDb, ['id' => 1, 'role' => 'student'], $draftApplicationId) === null, 'student cannot use staff detail service');
+$recordAuthorizedDetailView = static function (PDO $database, array $viewer, int $applicationId): bool {
+    $applicationDetail = StaffService::detail($database, $viewer, $applicationId);
+    if ($applicationDetail === null) return false;
+    return AuditLog::recordOncePerWindow($database, $viewer, 'application.viewed', 'application', $applicationId, 600);
+};
+$viewAuditStart = (int) $workflowDb->query("SELECT COUNT(*) FROM audit_logs WHERE action='application.viewed' AND entity_id=2")->fetchColumn();
+$firstAuthorizedView = $recordAuthorizedDetailView($workflowDb, $reviewerOne, 2);
+$refreshAuthorizedView = $recordAuthorizedDetailView($workflowDb, $reviewerOne, 2);
+$workflowDb->prepare("UPDATE audit_logs SET created_at = :created_at WHERE action='application.viewed' AND user_id=3 AND entity_id=2")->execute(['created_at' => gmdate('Y-m-d H:i:s', time() - 601)]);
+$viewAfterWindow = $recordAuthorizedDetailView($workflowDb, $reviewerOne, 2);
+$separateUserView = $recordAuthorizedDetailView($workflowDb, $adminUser, 2);
+$deniedReviewerView = $recordAuthorizedDetailView($workflowDb, $reviewerTwo, 2);
+$viewAuditRows = $workflowDb->query("SELECT user_id, actor_label, action, outcome, created_at, details FROM audit_logs WHERE action='application.viewed' AND entity_id=2 ORDER BY id")->fetchAll();
+$assert($firstAuthorizedView && !$refreshAuthorizedView && $viewAfterWindow && $separateUserView && !$deniedReviewerView && count($viewAuditRows) === $viewAuditStart + 3 && (int) $viewAuditRows[count($viewAuditRows) - 1]['user_id'] === (int) $adminUser['id'] && $viewAuditRows[count($viewAuditRows) - 1]['actor_label'] !== '' && $viewAuditRows[count($viewAuditRows) - 1]['created_at'] !== '' && $viewAuditRows[count($viewAuditRows) - 1]['outcome'] === 'success', 'authorized detail views audit once per user/application/window, later visits and other users log, and denied reviewer access has no success event');
+$archiveDetailViewer = static function (array $viewer, ?array $applicationDetail): string {
+    $user = $viewer;
+    $application = $applicationDetail ?? [];
+    $statusLabels = ['submitted' => 'Submitted', 'in_screening' => 'In screening', 'documents_incomplete' => 'Documents incomplete', 'interview_scheduled' => 'Interview scheduled', 'accepted' => 'Accepted', 'declined' => 'Declined', 'enrolled' => 'Enrolled'];
+    $reviewers = [];
+    ob_start();
+    require dirname(__DIR__) . '/resources/views/staff/application-detail.php';
+    return (string) ob_get_clean();
+};
+$activeAdminDetail = StaffService::detail($workflowDb, $adminUser, 2);
+$activeAdminDetailMarkup = $archiveDetailViewer($adminUser, $activeAdminDetail);
+$activeReviewerDetail = StaffService::detail($workflowDb, $reviewerOne, 2);
+$activeReviewerDetailMarkup = $archiveDetailViewer($reviewerOne, $activeReviewerDetail);
+$assert(str_contains($activeAdminDetailMarkup, 'action="/staff/application/archive"') && str_contains($activeAdminDetailMarkup, 'Archive this application? It will be hidden from active queues') && str_contains($activeAdminDetailMarkup, 'name="_csrf"') && !str_contains($activeReviewerDetailMarkup, 'action="/staff/application/archive"') && !str_contains($activeReviewerDetailMarkup, 'action="/staff/application/restore"'), 'active detail render shows CSRF-confirmed Archive to admins and no archive controls to reviewers');
+$workflowDb->exec('UPDATE applications SET deleted_at = UTC_TIMESTAMP() WHERE id=2');
+$archivedAdminDetail = StaffService::detail($workflowDb, $adminUser, 2, false, [], true, true);
+$archivedReviewerDetail = StaffService::detail($workflowDb, $reviewerOne, 2, false, [], true, true);
+$adminArchivedDetailMarkup = $archiveDetailViewer($adminUser, $archivedAdminDetail);
+$reviewerArchivedDetailMarkup = $archivedReviewerDetail === null ? '' : $archiveDetailViewer($reviewerOne, $archivedReviewerDetail);
+$workflowDb->exec('UPDATE applications SET deleted_at = NULL WHERE id=2');
+$assert(is_array($archivedAdminDetail) && !empty($archivedAdminDetail['is_archived']) && str_contains($adminArchivedDetailMarkup, 'action="/staff/application/restore"') && str_contains($adminArchivedDetailMarkup, 'Restore this application to active queues') && $archivedReviewerDetail === null && $reviewerArchivedDetailMarkup === '', 'administrator can render archived detail with Restore while a reviewer cannot load it even with archived mode requested');
 $assert(StaffService::authorizedDocument($workflowDb, ['id' => 1, 'role' => 'student'], 1) === null, 'student cannot use staff document authorization service');
 $assignmentDenied = false;
 try {
@@ -1470,7 +1517,7 @@ $reviewAuditIp = $workflowDb->query("SELECT ip_address FROM audit_logs WHERE act
 $assert($reviewAuditIp === '192.0.2.10', 'document review audit event stores the direct client IP');
 $historicalDocument = StaffService::authorizedDocument($workflowDb, $reviewerOne, 1, false, true);
 $historyDetail = StaffService::detail($workflowDb, $reviewerOne, 2);
-$assert(is_array($historicalDocument) && count($historyDetail['document_history']) === 1, 'authorized staff can retrieve preserved prior version and its history');
+$assert(is_array($historicalDocument) && is_array($historyDetail) && count($historyDetail['document_history']) === 1, 'authorized staff can retrieve preserved prior version and its history');
 $assert(StaffService::authorizedDocument($workflowDb, $reviewerTwo, 1, false, true) === null, 'unassigned reviewer cannot download another reviewer application history');
 $acceptedStatus = false;
 $acceptedStatusError = '';
@@ -1820,7 +1867,7 @@ $chartDb->exec('DELETE FROM applications');
 $emptyCharts = StaffService::charts($chartDb, ['id'=>5,'role'=>'admin']);
 $assert(count($emptyCharts['monthly']) === 12 && array_sum(array_column($emptyCharts['monthly'], 'total')) === 0 && array_sum(array_column($emptyCharts['submitted_reviewed'], 'submitted')) === 0 && array_sum(array_column($emptyCharts['submitted_reviewed'], 'reviewed')) === 0 && $emptyCharts['statuses'] === [] && $emptyCharts['programs'] === [] && count(array_filter($emptyCharts['review_time'], static fn (array $row): bool => $row['average_hours'] !== null)) === 0, 'all charts return empty-safe database-backed series when there are no applications');
 $report = StaffService::applications($workflowDb, $reviewerOne, [], true);
-$assert($report['total'] === 5 && !$report['truncated'] && $report['summary']['reviewed'] === 4 && isset($report['summary']['programs']['Test Program']), 'report summary is complete and reviewer scoped');
+$assert($report['total'] === 5 && !$report['truncated'] && $report['summary']['reviewed'] === 2 && isset($report['summary']['programs']['Test Program']), 'report summary counts only scoped applications with an actual recorded review event');
 $reportPaginationStartId = (int) $workflowDb->query('SELECT MAX(id) FROM applications')->fetchColumn();
 $reportPaginationFixtures = $workflowDb->prepare('INSERT INTO applications (student_id, academic_program_id, academic_year_id, status, submitted_at) VALUES (2, 1, 1, \'submitted\', UTC_TIMESTAMP())');
 for ($applicationIndex = 0; $applicationIndex < 15; $applicationIndex++) {
@@ -2034,7 +2081,14 @@ $_SESSION['captcha_answer'] = '5';
 $attemptCountBeforeBadCaptcha = (int) $database->query('SELECT COUNT(*) FROM login_attempts')->fetchColumn();
 $badCaptcha = AuthService::login($database, ['email' => 'two@example.test', 'password' => 'wrong', 'captcha_answer' => '0'], $cooldownStart);
 $attemptCountAfterBadCaptcha = (int) $database->query('SELECT COUNT(*) FROM login_attempts')->fetchColumn();
-$assert($badCaptcha['error'] === 'captcha' && $attemptCountBeforeBadCaptcha === $attemptCountAfterBadCaptcha, 'invalid CAPTCHA is distinct and does not count as a password failure');
+$badCaptchaAuditCount = (int) $database->query("SELECT COUNT(*) FROM audit_logs WHERE action='auth.login_failed' AND outcome='failure'")->fetchColumn();
+$assert($badCaptcha['error'] === 'captcha' && $attemptCountBeforeBadCaptcha === $attemptCountAfterBadCaptcha && $badCaptchaAuditCount > 0, 'invalid CAPTCHA is distinct, is failure-audited, and does not count as a password failure');
+
+$_SESSION['captcha_answer'] = '5';
+$emptyCredentialAuditBefore = (int) $database->query("SELECT COUNT(*) FROM audit_logs WHERE action='auth.login_failed'")->fetchColumn();
+$emptyCredentialLogin = AuthService::login($database, ['email' => '', 'password' => '', 'captcha_answer' => '5'], $cooldownStart);
+$emptyCredentialAuditAfter = (int) $database->query("SELECT COUNT(*) FROM audit_logs WHERE action='auth.login_failed'")->fetchColumn();
+$assert(!$emptyCredentialLogin['ok'] && $emptyCredentialAuditAfter === $emptyCredentialAuditBefore + 1, 'valid-CAPTCHA login with missing credentials is rejected and creates exactly one failure audit event');
 
 $database->exec('DELETE FROM login_attempts');
 $sessionIdBeforeLogin = session_id();
@@ -2061,7 +2115,8 @@ $delivered = PasswordResetService::request($database, 'one@example.test', static
     $deliveryCaptured = compact('email', 'name', 'token');
     return true;
 });
-$assert($delivered && is_array($deliveryCaptured), 'reset delivery callback receives generated reset token');
+$resetRequestAuditCount = (int) $database->query("SELECT COUNT(*) FROM audit_logs WHERE action='auth.password_reset_requested' AND outcome='success'")->fetchColumn();
+$assert($delivered && is_array($deliveryCaptured) && $resetRequestAuditCount === 1, 'reset delivery callback receives generated reset token and one success audit row is recorded');
 $stored = $database->query('SELECT token_hash, expires_at, used_at FROM password_reset_tokens ORDER BY id DESC LIMIT 1')->fetch();
 $assert(is_array($stored) && hash_equals($stored['token_hash'], hash('sha256', $deliveryCaptured['token'])), 'only the token hash is stored');
 $assert($stored['used_at'] === null, 'successfully delivered reset token remains unused');
@@ -2107,6 +2162,8 @@ $unknownDelivery = PasswordResetService::request($database, 'missing@example.tes
 $assert(!$unknownDelivery, 'unknown account follows the same public success message path without creating a token');
 
 $changeResult = AuthService::changePassword($database, ['id' => $userId, 'full_name' => 'Fixture One'], 'ChangedPass!234', 'NewPass!23456', 'NewPass!23456');
+$changedPasswordAuditCount = (int) $database->query("SELECT COUNT(*) FROM audit_logs WHERE action='auth.password_changed' AND user_id=" . $userId)->fetchColumn();
+$assert($changedPasswordAuditCount === 1, 'successful password change is recorded exactly once');
 $assert($changeResult['ok'], 'password change succeeds with the correct current password');
 $assert(password_verify('NewPass!23456', $database->query('SELECT password_hash FROM users WHERE id=' . $userId)->fetchColumn()), 'password change stores a secure hash');
 $changeToken = bin2hex(random_bytes(32));
@@ -2151,6 +2208,13 @@ try {
 $hashAfterAuditFailure = $database->query('SELECT password_hash FROM users WHERE id=' . $userId)->fetchColumn();
 $assert($auditFailedChange && hash_equals($originalHash, $hashAfterAuditFailure), 'password change rolls back if its audit insert fails');
 
+$database->exec('DROP TRIGGER fail_audit');
+$_SESSION = ['user' => ['id' => $userId, 'role' => 'student'], 'csrf_token' => 'logout-test'];
+$logoutAuditBefore = (int) $database->query("SELECT COUNT(*) FROM audit_logs WHERE action='auth.logout' AND user_id=" . $userId)->fetchColumn();
+AuthService::logout($database, ['id' => $userId, 'full_name' => 'Fixture One']);
+$logoutAuditAfter = (int) $database->query("SELECT COUNT(*) FROM audit_logs WHERE action='auth.logout' AND user_id=" . $userId)->fetchColumn();
+$assert($logoutAuditAfter === $logoutAuditBefore + 1, 'successful logout writes one audit row');
+$database->exec("CREATE TRIGGER fail_audit BEFORE INSERT ON audit_logs BEGIN SELECT RAISE(ABORT, 'simulated audit failure'); END");
 $_SESSION = ['user' => ['id' => $userId, 'role' => 'student'], 'csrf_token' => 'logout-test'];
 AuthService::logout($database, ['id' => $userId, 'full_name' => 'Fixture One']);
 $assert($_SESSION === [] && session_status() !== PHP_SESSION_ACTIVE, 'logout destroys the session even when the audit write fails');

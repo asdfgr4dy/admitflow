@@ -1,6 +1,4 @@
 (() => {
-    document.querySelectorAll('[data-print]').forEach(button => button.addEventListener('click', () => window.print()));
-
     document.querySelectorAll('[data-toast]').forEach(toastElement => {
         if (window.bootstrap?.Toast) {
             window.bootstrap.Toast.getOrCreateInstance(toastElement).show();
@@ -206,6 +204,116 @@
     }
 
     if (window.bootstrap?.Modal) {
+        const printPreviewModal = document.querySelector('[data-print-preview-modal]');
+        if (printPreviewModal) {
+            const previewFrame = printPreviewModal.querySelector('[data-preview-frame]');
+            const previewLoading = printPreviewModal.querySelector('[data-preview-loading]');
+            const previewError = printPreviewModal.querySelector('[data-preview-error]');
+            const previewPrint = printPreviewModal.querySelector('[data-preview-print]');
+            const orientationButtons = [...printPreviewModal.querySelectorAll('[data-preview-orientation]')];
+            let previewTimer = 0;
+            let previewUrl = '';
+            let orientation = 'portrait';
+            let previewReady = false;
+            let modalOpen = false;
+            let opener = null;
+
+            const setPreviewError = () => {
+                window.clearTimeout(previewTimer);
+                previewReady = false;
+                previewPrint.disabled = true;
+                previewLoading.hidden = true;
+                previewFrame.hidden = true;
+                previewError.hidden = false;
+            };
+
+            const applyOrientation = () => {
+                try {
+                    const previewDocument = previewFrame.contentDocument;
+                    if (!previewDocument || previewFrame.contentWindow.location.origin !== window.location.origin) return false;
+                    previewDocument.body.classList.toggle('print-landscape', orientation === 'landscape');
+                    return true;
+                } catch {
+                    return false;
+                }
+            };
+
+            const loadReportPreview = () => {
+                window.clearTimeout(previewTimer);
+                previewReady = false;
+                previewPrint.disabled = true;
+                previewLoading.hidden = false;
+                previewError.hidden = true;
+                previewFrame.hidden = true;
+                if (!opener?.dataset.previewUrl) {
+                    setPreviewError();
+                    return;
+                }
+                previewUrl = new URL(opener.dataset.previewUrl, window.location.href).href;
+                previewFrame.title = opener.dataset.previewTitle || 'Printable document preview';
+                previewTimer = window.setTimeout(setPreviewError, 20000);
+                previewFrame.src = previewUrl;
+            };
+
+            previewFrame.addEventListener('load', () => {
+                if (!modalOpen) return;
+                try {
+                    const previewWindow = previewFrame.contentWindow;
+                    const previewDocument = previewFrame.contentDocument;
+                    if (!previewWindow || !previewDocument || previewWindow.location.origin !== window.location.origin || previewWindow.location.href !== previewUrl) return;
+                    if (!previewDocument.querySelector('[data-print-preview-sheet]') || !applyOrientation()) {
+                        setPreviewError();
+                        return;
+                    }
+                    window.clearTimeout(previewTimer);
+                    previewReady = true;
+                    previewPrint.disabled = false;
+                    previewLoading.hidden = true;
+                    previewError.hidden = true;
+                    previewFrame.hidden = false;
+                } catch {
+                    setPreviewError();
+                }
+            });
+
+            orientationButtons.forEach(button => button.addEventListener('click', () => {
+                orientation = button.dataset.previewOrientation;
+                orientationButtons.forEach(option => {
+                    const selected = option === button;
+                    option.classList.toggle('active', selected);
+                    option.setAttribute('aria-pressed', selected ? 'true' : 'false');
+                });
+                if (previewReady) applyOrientation();
+            }));
+
+            printPreviewModal.querySelector('[data-preview-retry]')?.addEventListener('click', loadReportPreview);
+            previewPrint.addEventListener('click', () => {
+                if (!previewReady || !applyOrientation()) return;
+                previewFrame.contentWindow.focus();
+                previewFrame.contentWindow.print();
+            });
+            printPreviewModal.addEventListener('show.bs.modal', event => {
+                modalOpen = true;
+                opener = event.relatedTarget || document.activeElement;
+                orientation = 'portrait';
+                orientationButtons.forEach(button => {
+                    const selected = button.dataset.previewOrientation === orientation;
+                    button.classList.toggle('active', selected);
+                    button.setAttribute('aria-pressed', selected ? 'true' : 'false');
+                });
+            });
+            printPreviewModal.addEventListener('shown.bs.modal', loadReportPreview);
+            printPreviewModal.addEventListener('hidden.bs.modal', () => {
+                modalOpen = false;
+                window.clearTimeout(previewTimer);
+                previewReady = false;
+                previewPrint.disabled = true;
+                previewFrame.hidden = true;
+                if (opener?.isConnected) opener.focus({ preventScroll: true });
+                previewFrame.src = 'about:blank';
+            });
+        }
+
         document.querySelectorAll('[data-create-form-modal]').forEach(modal => {
             modal.addEventListener('shown.bs.modal', () => modal.querySelector('.is-invalid, input:not([type="hidden"]), select, textarea')?.focus());
             if (modal.dataset.open === 'true') window.bootstrap.Modal.getOrCreateInstance(modal).show();

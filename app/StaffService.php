@@ -1,6 +1,8 @@
 <?php
 declare(strict_types=1);
 
+require_once __DIR__ . '/AuditLog.php';
+
 final class StaffService
 {
     public static function dashboard(PDO $database, array $user): array
@@ -343,6 +345,14 @@ final class StaffService
         self::requireStaff($user);
         $where = ["a.deleted_at IS NULL", "a.status <> 'draft'"];
         $parameters = [];
+        $archivedFilter = '';
+        if (!$allRows && ($user['role'] ?? '') === 'admin') {
+            $archivedFilter = trim((string) ($input['archived'] ?? ''));
+            if (!in_array($archivedFilter, ['', 'active', 'archived'], true)) {
+                throw new DomainException('Choose a valid archived application filter.');
+            }
+            $where[0] = $archivedFilter === 'archived' ? 'a.deleted_at IS NOT NULL' : 'a.deleted_at IS NULL';
+        }
         if ($user['role'] !== 'admin') {
             $where[] = '(active_assignment.reviewer_id = :queue_reviewer_id OR active_assignment.reviewer_id IS NULL)';
             $parameters['queue_reviewer_id'] = $user['id'];
@@ -518,45 +528,138 @@ final class StaffService
             $reviewQuery = $database->prepare('SELECT ROUND(AVG(' . $reviewInterval . '), 1)' . $joins . $firstReviewJoin . ' WHERE ' . $whereSql . ' AND a.submitted_at IS NOT NULL');
             $reviewQuery->execute($parameters);
             $summary['average_review_hours'] = $reviewQuery->fetchColumn();
-            $countCondition = static function (string $condition, array $extra = []) use ($database, $joins, $whereSql, $parameters): int {
-                $query = $database->prepare('SELECT COUNT(DISTINCT a.id)' . $joins . 'WHERE ' . $whereSql . ' AND ' . $condition);
-                $query->execute($parameters + $extra);
-                return (int) $query->fetchColumn();
-            };
-            $funnelStages = [
-                ['key' => 'submitted', 'label' => 'Submitted', 'condition' => $drilldownConditions['stage:submitted']],
-                ['key' => 'screening', 'label' => 'Screening', 'condition' => $drilldownConditions['stage:screening']],
-                ['key' => 'interview', 'label' => 'Interview', 'condition' => $drilldownConditions['stage:interview']],
-                ['key' => 'accepted', 'label' => 'Accepted', 'condition' => $drilldownConditions['stage:accepted']],
-                ['key' => 'enrolled', 'label' => 'Enrolled', 'condition' => $drilldownConditions['stage:enrolled']],
-            ];
-            $previousStageCount = null;
-            foreach ($funnelStages as &$stage) {
-                $stage['count'] = $countCondition($stage['condition']);
-                $stage['percentage'] = $totalApplications > 0 ? round($stage['count'] / $totalApplications * 100, 1) : 0.0;
-                $stage['conversion'] = $previousStageCount === null ? null : ($previousStageCount > 0 ? round($stage['count'] / $previousStageCount * 100, 1) : null);
-                $previousStageCount = $stage['count'];
-            }
-            unset($stage);
-            $summary['funnel'] = $funnelStages;
-            $summary['attention'] = [
-                'unassigned' => $countCondition($drilldownConditions['attention:unassigned']),
-                'interviews_week' => $countCondition($drilldownConditions['attention:interviews_week'], ['drill_week_start' => $weekStart, 'drill_week_end' => $weekEnd]),
-                'idle' => $countCondition($drilldownConditions['attention:idle'], ['drill_idle_submission_before' => $idleBefore, 'drill_idle_history_before' => $idleBefore, 'drill_idle_note_before' => $idleBefore, 'drill_idle_interview_before' => $idleBefore, 'drill_idle_document_before' => $idleBefore]),
-                'incomplete_documents' => $countCondition($drilldownConditions['attention:incomplete_documents']),
-            ];
-            $summary['side_states'] = [
-                'declined' => (int) ($summary['statuses']['declined'] ?? 0),
-                'documents_incomplete' => (int) ($summary['statuses']['documents_incomplete'] ?? 0),
-            ];
+            $summary += self::reportMetrics($database, $user, $joins, $whereSql, $parameters, $totalApplications, $drilldownConditions, $summary['statuses'], $manila);
         }
 
         $filters = $input;
+        if (!$allRows && ($user['role'] ?? '') === 'admin') $filters['archived'] = $archivedFilter;
+        else unset($filters['archived']);
         $filters['date_range'] = $datePreset;
         $filters['drilldown'] = $drilldown;
         $filters['report_sort'] = $sortKey;
         $filters['report_direction'] = $sortDirection;
         return ['rows' => $statement->fetchAll(), 'total' => $totalApplications, 'table_total' => $rowTotal, 'summary' => $summary, 'truncated' => $allRows && !$paginateAllRows && $rowTotal > $pageSize, 'page' => $pagination['page'], 'page_size' => $pageSize, 'pagination' => $pagination, 'filters' => $filters];
+    }
+
+    public static function archiveApplication(PDO $database, array $user, int $applicationId): void
+    {
+        if (($user['role'] ?? '') !== 'admin') {
+            self::recordApplicationArchiveFailure($database, $user, $applicationId, 'application.archive_blocked', 'Administrator access is required.');
+            throw new DomainException('Administrator access is required to archive applications.');
+        }
+        if ($applicationId < 1) {
+            self::recordApplicationArchiveFailure($database, $user, $applicationId, 'application.archive_blocked', 'Invalid application identifier.');
+            throw new DomainException('Choose a valid application to archive.');
+        }
+        $database->beginTransaction();
+        try {
+            $lock = $database->getAttribute(PDO::ATTR_DRIVER_NAME) === 'mysql' ? ' FOR UPDATE' : '';
+            $query = $database->prepare('SELECT deleted_at FROM applications WHERE id = :id' . $lock);
+            $query->execute(['id' => $applicationId]);
+            $deletedAt = $query->fetchColumn();
+            if ($deletedAt === false) throw new DomainException('That application could not be found.');
+            if ($deletedAt !== null) throw new DomainException('That application is already archived.');
+            $update = $database->prepare('UPDATE applications SET deleted_at = :deleted_at WHERE id = :id AND deleted_at IS NULL');
+            $update->execute(['deleted_at' => gmdate('Y-m-d H:i:s'), 'id' => $applicationId]);
+            if ($update->rowCount() !== 1) throw new DomainException('The application changed before it could be archived.');
+            AuditLog::record($database, $user, 'application.archived', 'application', $applicationId, 'success', [], 'notice');
+            $database->commit();
+        } catch (Throwable $error) {
+            if ($database->inTransaction()) $database->rollBack();
+            if ($error instanceof DomainException) {
+                self::recordApplicationArchiveFailure($database, $user, $applicationId, 'application.archive_blocked', $error->getMessage());
+            } else {
+                self::recordApplicationArchiveFailure($database, $user, $applicationId, 'application.archive_failed', 'operation_failed', 'failure');
+            }
+            throw $error;
+        }
+    }
+
+    public static function restoreApplication(PDO $database, array $user, int $applicationId): void
+    {
+        if (($user['role'] ?? '') !== 'admin') {
+            self::recordApplicationArchiveFailure($database, $user, $applicationId, 'application.restore_blocked', 'Administrator access is required.');
+            throw new DomainException('Administrator access is required to restore applications.');
+        }
+        if ($applicationId < 1) {
+            self::recordApplicationArchiveFailure($database, $user, $applicationId, 'application.restore_blocked', 'Invalid application identifier.');
+            throw new DomainException('Choose a valid application to restore.');
+        }
+        $database->beginTransaction();
+        try {
+            $lock = $database->getAttribute(PDO::ATTR_DRIVER_NAME) === 'mysql' ? ' FOR UPDATE' : '';
+            $query = $database->prepare('SELECT deleted_at FROM applications WHERE id = :id' . $lock);
+            $query->execute(['id' => $applicationId]);
+            $deletedAt = $query->fetchColumn();
+            if ($deletedAt === false) throw new DomainException('That application could not be found.');
+            if ($deletedAt === null) throw new DomainException('That application is not archived.');
+            $update = $database->prepare('UPDATE applications SET deleted_at = NULL WHERE id = :id AND deleted_at IS NOT NULL');
+            $update->execute(['id' => $applicationId]);
+            if ($update->rowCount() !== 1) throw new DomainException('The application changed before it could be restored.');
+            AuditLog::record($database, $user, 'application.restored', 'application', $applicationId, 'success', [], 'notice');
+            $database->commit();
+        } catch (Throwable $error) {
+            if ($database->inTransaction()) $database->rollBack();
+            if ($error instanceof DomainException) {
+                self::recordApplicationArchiveFailure($database, $user, $applicationId, 'application.restore_blocked', $error->getMessage());
+            } else {
+                self::recordApplicationArchiveFailure($database, $user, $applicationId, 'application.restore_failed', 'operation_failed', 'failure');
+            }
+            throw $error;
+        }
+    }
+
+    private static function recordApplicationArchiveFailure(PDO $database, array $user, ?int $applicationId, string $action, string $reason, string $outcome = 'warning'): void
+    {
+        try {
+            AuditLog::record($database, $user, $action, 'application', $applicationId, $outcome, ['reason' => $reason], 'warning');
+        } catch (Throwable $error) {
+            error_log('[admitflow application archive] Audit event could not be recorded (' . $error::class . ').');
+        }
+    }
+
+    private static function reportMetrics(PDO $database, array $user, string $joins, string $whereSql, array $parameters, int $totalApplications, array $drilldownConditions, array $statuses, DateTimeZone $manila): array
+    {
+        self::requireStaff($user);
+        $countCondition = static function (string $condition, array $extra = []) use ($database, $joins, $whereSql, $parameters): int {
+            $query = $database->prepare('SELECT COUNT(DISTINCT a.id)' . $joins . 'WHERE ' . $whereSql . ' AND ' . $condition);
+            $query->execute($parameters + $extra);
+            return (int) $query->fetchColumn();
+        };
+        $stages = [
+            ['key' => 'submitted', 'label' => 'Submitted', 'condition' => $drilldownConditions['stage:submitted']],
+            ['key' => 'screening', 'label' => 'Screening', 'condition' => $drilldownConditions['stage:screening']],
+            ['key' => 'interview', 'label' => 'Interview', 'condition' => $drilldownConditions['stage:interview']],
+            ['key' => 'accepted', 'label' => 'Accepted', 'condition' => $drilldownConditions['stage:accepted']],
+            ['key' => 'enrolled', 'label' => 'Enrolled', 'condition' => $drilldownConditions['stage:enrolled']],
+        ];
+        $previousCount = null;
+        foreach ($stages as &$stage) {
+            $stage['count'] = $countCondition($stage['condition']);
+            $stage['percentage'] = $totalApplications > 0 ? round($stage['count'] / $totalApplications * 100, 1) : 0.0;
+            $stage['conversion'] = $previousCount === null ? null : ($previousCount > 0 ? round($stage['count'] / $previousCount * 100, 1) : null);
+            $previousCount = $stage['count'];
+        }
+        unset($stage);
+
+        $nowManila = new DateTimeImmutable('now', $manila);
+        $weekStart = $nowManila->modify('monday this week')->setTime(0, 0)->setTimezone(new DateTimeZone('UTC'))->format('Y-m-d H:i:s');
+        $weekEnd = (new DateTimeImmutable($weekStart, new DateTimeZone('UTC')))->add(new DateInterval('P7D'))->format('Y-m-d H:i:s');
+        $idleBefore = $nowManila->sub(new DateInterval('P7D'))->setTimezone(new DateTimeZone('UTC'))->format('Y-m-d H:i:s');
+
+        return [
+            'funnel' => $stages,
+            'attention' => [
+                'unassigned' => $countCondition($drilldownConditions['attention:unassigned']),
+                'interviews_week' => $countCondition($drilldownConditions['attention:interviews_week'], ['drill_week_start' => $weekStart, 'drill_week_end' => $weekEnd]),
+                'idle' => $countCondition($drilldownConditions['attention:idle'], ['drill_idle_submission_before' => $idleBefore, 'drill_idle_history_before' => $idleBefore, 'drill_idle_note_before' => $idleBefore, 'drill_idle_interview_before' => $idleBefore, 'drill_idle_document_before' => $idleBefore]),
+                'incomplete_documents' => $countCondition($drilldownConditions['attention:incomplete_documents']),
+            ],
+            'side_states' => [
+                'declined' => (int) ($statuses['declined'] ?? 0),
+                'documents_incomplete' => (int) ($statuses['documents_incomplete'] ?? 0),
+            ],
+        ];
     }
 
     public static function auditLog(PDO $database, array $input, bool $allRows = false): array
@@ -649,7 +752,7 @@ final class StaffService
             if ($value !== '') {
                 if ($boundary === 'end') $date = $date->add(new DateInterval('P1D'));
                 $parameter = $key . '_utc';
-                $where[] = 'created_at ' . ($boundary === 'start' ? '>=' : '<') . ' :' . $parameter;
+                $where[] = 'audit_logs.created_at ' . ($boundary === 'start' ? '>=' : '<') . ' :' . $parameter;
                 $parameters[$parameter] = $date->setTimezone(new DateTimeZone('UTC'))->format('Y-m-d H:i:s');
                 $dateFilters[$key] = $value;
             }
@@ -740,12 +843,7 @@ final class StaffService
         if (($user['role'] ?? '') !== 'admin') {
             throw new DomainException('Administrator access is required to export the audit log.');
         }
-        $statement = $database->prepare('INSERT INTO audit_logs (user_id, actor_label, action, entity_type, outcome, severity, ip_address) VALUES (:user_id, :actor, \'audit.exported\', \'audit_log\', \'success\', \'notice\', :ip)');
-        $statement->execute([
-            'user_id' => $user['id'],
-            'actor' => mb_substr((string) ($user['full_name'] ?? 'Administrator'), 0, 160),
-            'ip' => request_ip(),
-        ]);
+        AuditLog::record($database, $user, 'audit.exported', 'audit_log', null, 'success', [], 'notice');
     }
 
     private static function safeCsvCell(mixed $value): string
@@ -758,15 +856,11 @@ final class StaffService
     public static function recordReportExport(PDO $database, array $user, array $filters, int $rowCount): void
     {
         self::requireStaff($user);
+        $auditFilters = array_intersect_key($filters, array_flip(['status', 'program_id', 'year_id', 'date_range', 'start_date', 'end_date', 'reviewer_id', 'documents', 'drilldown', 'report_sort', 'report_direction']));
+        if (trim((string) ($filters['q'] ?? '')) !== '') $auditFilters['search_active'] = true;
         $database->beginTransaction();
         try {
-            $statement = $database->prepare('INSERT INTO audit_logs (user_id, actor_label, action, entity_type, outcome, severity, ip_address, details) VALUES (:user_id, :actor, \'report.exported\', \'application_report\', \'success\', \'notice\', :ip, :details)');
-            $statement->execute([
-                'user_id' => $user['id'],
-                'actor' => mb_substr($user['full_name'], 0, 160),
-                'ip' => request_ip(),
-                'details' => json_encode(['row_count' => $rowCount, 'filters' => array_intersect_key($filters, array_flip(['q', 'status', 'program_id', 'year_id', 'date_range', 'start_date', 'end_date', 'reviewer_id', 'documents', 'drilldown', 'report_sort', 'report_direction']))], JSON_THROW_ON_ERROR),
-            ]);
+            AuditLog::record($database, $user, 'report.exported', 'application_report', null, 'success', ['row_count' => $rowCount, 'filters' => $auditFilters], 'notice');
             $database->commit();
         } catch (Throwable $error) {
             if ($database->inTransaction()) $database->rollBack();
@@ -774,14 +868,24 @@ final class StaffService
         }
     }
 
-    public static function detail(PDO $database, array $user, int $applicationId, bool $lock = false, array $input = [], bool $includeAllActivity = false): ?array
+    public static function recordReportPrintPreview(PDO $database, array $user, array $filters, int $rowCount): void
+    {
+        self::requireStaff($user);
+        $auditFilters = array_intersect_key($filters, array_flip(['status', 'program_id', 'year_id', 'date_range', 'start_date', 'end_date', 'reviewer_id', 'documents', 'drilldown', 'report_sort', 'report_direction']));
+        if (trim((string) ($filters['q'] ?? '')) !== '') $auditFilters['search_active'] = true;
+        AuditLog::record($database, $user, 'report.print_preview_opened', 'application_report', null, 'success', ['row_count' => $rowCount, 'filters' => $auditFilters], 'notice');
+    }
+
+    public static function detail(PDO $database, array $user, int $applicationId, bool $lock = false, array $input = [], bool $includeAllActivity = false, bool $includeArchived = false): ?array
     {
         if (!in_array($user['role'] ?? '', ['reviewer', 'admin'], true)) {
             return null;
         }
+        $includeArchived = $includeArchived && ($user['role'] ?? '') === 'admin';
         $scope = $user['role'] === 'admin' ? '' : ' AND (NOT EXISTS (SELECT 1 FROM reviewer_assignments assigned WHERE assigned.application_id = a.id AND assigned.unassigned_at IS NULL) OR EXISTS (SELECT 1 FROM reviewer_assignments assigned WHERE assigned.application_id = a.id AND assigned.reviewer_id = :reviewer_id AND assigned.unassigned_at IS NULL))';
+        $archiveCondition = $includeArchived ? 'a.deleted_at IS NOT NULL' : 'a.deleted_at IS NULL';
         $statement = $database->prepare(
-            'SELECT a.*, u.full_name, u.email, sp.mobile_number, sp.date_of_birth, sp.address_line, sp.municipality, sp.province, sp.emergency_contact_name, sp.emergency_contact_number, p.name AS program_name, y.label AS year_label FROM applications a JOIN users u ON u.id = a.student_id LEFT JOIN student_profiles sp ON sp.user_id = u.id LEFT JOIN academic_programs p ON p.id = a.academic_program_id LEFT JOIN academic_years y ON y.id = a.academic_year_id WHERE a.id = :application_id AND a.deleted_at IS NULL AND a.status <> \'draft\'' . $scope . ' LIMIT 1' . ($lock && $database->getAttribute(PDO::ATTR_DRIVER_NAME) === 'mysql' ? ' FOR UPDATE' : '')
+            'SELECT a.*, u.full_name, u.email, sp.mobile_number, sp.date_of_birth, sp.address_line, sp.municipality, sp.province, sp.emergency_contact_name, sp.emergency_contact_number, p.name AS program_name, y.label AS year_label FROM applications a JOIN users u ON u.id = a.student_id LEFT JOIN student_profiles sp ON sp.user_id = u.id LEFT JOIN academic_programs p ON p.id = a.academic_program_id LEFT JOIN academic_years y ON y.id = a.academic_year_id WHERE a.id = :application_id AND ' . $archiveCondition . ' AND a.status <> \'draft\'' . $scope . ' LIMIT 1' . ($lock && $database->getAttribute(PDO::ATTR_DRIVER_NAME) === 'mysql' ? ' FOR UPDATE' : '')
         );
         $parameters = ['application_id' => $applicationId];
         if ($user['role'] !== 'admin') {
@@ -792,6 +896,7 @@ final class StaffService
         if (!is_array($application)) {
             return null;
         }
+        $application['is_archived'] = $application['deleted_at'] !== null;
 
         $assignment = $database->prepare('SELECT u.id, u.full_name FROM reviewer_assignments ra JOIN users u ON u.id = ra.reviewer_id WHERE ra.application_id = :application_id AND ra.unassigned_at IS NULL ORDER BY ra.id DESC LIMIT 1');
         $assignment->execute(['application_id' => $applicationId]);
@@ -987,15 +1092,19 @@ final class StaffService
     public static function reviewDocument(PDO $database, array $user, int $documentId, string $decision, string $feedback): void
     {
         if (!in_array($user['role'] ?? '', ['reviewer', 'admin'], true)) {
+            AuditLog::record($database, $user, 'document.review_failed', 'application_document', $documentId > 0 ? $documentId : null, 'failure', ['reason' => 'Admissions staff access is required.'], 'warning');
             throw new DomainException('Admissions staff access is required to review documents.');
         }
         if (!in_array($decision, ['verified', 'rejected', 'action_required'], true)) {
+            AuditLog::record($database, $user, 'document.review_failed', 'application_document', $documentId > 0 ? $documentId : null, 'failure', ['reason' => 'Invalid review outcome.'], 'warning');
             throw new DomainException('Choose a valid document review outcome.');
         }
         if ($decision !== 'verified' && trim($feedback) === '') {
+            AuditLog::record($database, $user, 'document.review_failed', 'application_document', $documentId > 0 ? $documentId : null, 'failure', ['reason' => 'Feedback is required for this outcome.'], 'warning');
             throw new DomainException('Add a clear comment when a document needs changes.');
         }
         if (mb_strlen($feedback) > 5000) {
+            AuditLog::record($database, $user, 'document.review_failed', 'application_document', $documentId > 0 ? $documentId : null, 'failure', ['reason' => 'Review feedback exceeds the limit.'], 'warning');
             throw new DomainException('Keep document feedback under 5,000 characters.');
         }
 
@@ -1052,16 +1161,21 @@ final class StaffService
                             $history->execute(['application_id' => $document['application_id'], 'user_id' => $user['id']]);
                             $statusNotification = $database->prepare('INSERT INTO notifications (user_id, type, title, message, related_type, related_id) VALUES (:user_id, \'application_status\', \'Document review complete\', \'All required documents have passed review. Your application is back in screening.\', \'application\', :application_id)');
                             $statusNotification->execute(['user_id' => $document['student_id'], 'application_id' => $document['application_id']]);
-                            self::audit($database, $user, 'application.status_changed', 'application', (int) $document['application_id'], 'success');
+                            AuditLog::record($database, $user, 'application.status_changed', 'application', (int) $document['application_id'], 'success');
                         }
                     }
                 }
             }
-            self::audit($database, $user, 'document.reviewed', 'application_document', $documentId, 'success');
+            AuditLog::record($database, $user, 'document.reviewed', 'application_document', $documentId, 'success');
             $database->commit();
         } catch (Throwable $error) {
             if ($database->inTransaction()) {
                 $database->rollBack();
+            }
+            try {
+                AuditLog::record($database, $user, 'document.review_failed', 'application_document', $documentId, 'failure', ['reason' => $error instanceof DomainException ? $error->getMessage() : 'Review operation failed.'], 'warning');
+            } catch (Throwable $auditError) {
+                error_log('[admitflow document review] Failure audit could not be recorded (' . $auditError::class . ').');
             }
             throw $error;
         }
@@ -1121,7 +1235,7 @@ final class StaffService
             }
             $notification = $database->prepare('INSERT INTO notifications (user_id, type, title, message, related_type, related_id) VALUES (:user_id, \'application_status\', \'Application status updated\', :message, \'application\', :application_id)');
             $notification->execute(['user_id' => $application['student_id'], 'message' => 'Your application status is now ' . str_replace('_', ' ', $newStatus) . '.', 'application_id' => $applicationId]);
-            self::audit($database, $user, 'application.status_changed', 'application', $applicationId, 'success');
+            AuditLog::record($database, $user, 'application.status_changed', 'application', $applicationId, 'success');
             $database->commit();
         } catch (Throwable $error) {
             if ($database->inTransaction()) {
@@ -1144,7 +1258,7 @@ final class StaffService
         try {
             $statement = $database->prepare('INSERT INTO screening_notes (application_id, author_id, note, visibility) VALUES (:application_id, :author_id, :note, \'staff_only\')');
             $statement->execute(['application_id' => $applicationId, 'author_id' => $user['id'], 'note' => $note]);
-            self::audit($database, $user, 'application.note_added', 'application', $applicationId, 'success');
+            AuditLog::record($database, $user, 'application.note_added', 'application', $applicationId, 'success');
             $database->commit();
         } catch (Throwable $error) {
             if ($database->inTransaction()) $database->rollBack();
@@ -1175,7 +1289,7 @@ final class StaffService
             $assign->execute(['application_id' => $applicationId, 'reviewer_id' => $reviewerId, 'assigned_by' => $user['id']]);
             $notification = $database->prepare('INSERT INTO notifications (user_id, type, title, message, related_type, related_id) VALUES (:user_id, \'review_assignment\', \'Application assigned\', :message, \'application\', :application_id)');
             $notification->execute(['user_id' => $reviewerId, 'message' => 'An application has been assigned to you for review.', 'application_id' => $applicationId]);
-            self::audit($database, $user, 'application.reviewer_assigned', 'application', $applicationId, 'success');
+            AuditLog::record($database, $user, 'application.reviewer_assigned', 'application', $applicationId, 'success');
             $database->commit();
         } catch (Throwable $error) {
             if ($database->inTransaction()) {
@@ -1251,7 +1365,7 @@ final class StaffService
             $history->execute(['application_id' => $applicationId, 'from_status' => $lockedStatus, 'user_id' => $user['id']]);
             $notification = $database->prepare('INSERT INTO notifications (user_id, type, title, message, related_type, related_id) VALUES (:user_id, \'interview_scheduled\', \'Interview scheduled\', :message, \'application\', :application_id)');
             $notification->execute(['user_id' => $lockedApplication['student_id'], 'message' => 'Your interview is scheduled for ' . $starts->format('F j, Y g:i A') . ' Asia/Manila. ' . trim($instructions), 'application_id' => $applicationId]);
-            self::audit($database, $user, 'interview.scheduled', 'interview', $interviewId, 'success');
+            AuditLog::record($database, $user, 'interview.scheduled', 'interview', $interviewId, 'success');
             $database->commit();
         } catch (Throwable $error) {
             if ($database->inTransaction()) $database->rollBack();
@@ -1302,7 +1416,7 @@ final class StaffService
                 }
                 $history = $database->prepare('INSERT INTO application_status_history (application_id, from_status, to_status, changed_by, note) VALUES (:application_id, \'interview_scheduled\', \'in_screening\', :user_id, \'The scheduled interview was cancelled.\')');
                 $history->execute(['application_id' => $applicationId, 'user_id' => $user['id']]);
-                self::audit($database, $user, 'application.status_changed', 'application', $applicationId, 'success');
+                AuditLog::record($database, $user, 'application.status_changed', 'application', $applicationId, 'success');
             }
             $notification = $database->prepare('INSERT INTO notifications (user_id, type, title, message, related_type, related_id) VALUES (:user_id, :type, :title, :message, \'interview\', :interview_id)');
             $notification->execute([
@@ -1312,7 +1426,7 @@ final class StaffService
                 'message' => $status === 'cancelled' ? 'Your interview has been cancelled. The Admission Office will update your application.' : 'Your interview status is now ' . str_replace('_', ' ', $status) . '.',
                 'interview_id' => $interviewId,
             ]);
-            self::audit($database, $user, 'interview.' . $status, 'interview', $interviewId, 'success');
+            AuditLog::record($database, $user, 'interview.' . $status, 'interview', $interviewId, 'success');
             $database->commit();
         } catch (Throwable $error) {
             if ($database->inTransaction()) $database->rollBack();
@@ -1364,7 +1478,7 @@ final class StaffService
             }
             $notification = $database->prepare('INSERT INTO notifications (user_id, type, title, message, related_type, related_id) VALUES (:user_id, \'interview_rescheduled\', \'Interview rescheduled\', :message, \'interview\', :interview_id)');
             $notification->execute(['user_id' => $application['student_id'], 'message' => 'Your interview is rescheduled for ' . $starts->format('F j, Y g:i A') . ' Asia/Manila. ' . trim($instructions), 'interview_id' => $interviewId]);
-            self::audit($database, $user, 'interview.rescheduled', 'interview', $interviewId, 'success');
+            AuditLog::record($database, $user, 'interview.rescheduled', 'interview', $interviewId, 'success');
             $database->commit();
         } catch (Throwable $error) {
             if ($database->inTransaction()) $database->rollBack();
@@ -1405,7 +1519,7 @@ final class StaffService
                 : 'INSERT INTO enrollment_records (application_id, status, checklist, prepared_by, completed_at) VALUES (:application_id, :status, :checklist, :prepared_by, :completed_at) ON CONFLICT(application_id) DO UPDATE SET status = excluded.status, checklist = excluded.checklist, prepared_by = excluded.prepared_by, completed_at = excluded.completed_at';
             $save = $database->prepare($saveSql);
             $save->execute(['application_id' => $applicationId, 'status' => $isComplete ? 'complete' : 'in_progress', 'checklist' => json_encode($checklist, JSON_THROW_ON_ERROR), 'prepared_by' => $user['id'], 'completed_at' => $isComplete ? gmdate('Y-m-d H:i:s') : null]);
-            self::audit($database, $user, 'enrollment.checklist_updated', 'application', $applicationId, 'success');
+            AuditLog::record($database, $user, 'enrollment.checklist_updated', 'application', $applicationId, 'success');
             $database->commit();
         } catch (Throwable $error) {
             if ($database->inTransaction()) $database->rollBack();
@@ -1438,7 +1552,7 @@ final class StaffService
         if ($document === null) {
             return false;
         }
-        self::audit($database, $user, 'document.previewed', 'application_document', $documentId, 'success');
+        AuditLog::record($database, $user, 'document.previewed', 'application_document', $documentId, 'success');
 
         return true;
     }
@@ -1491,20 +1605,6 @@ final class StaffService
         }
 
         return false;
-    }
-
-    private static function audit(PDO $database, array $user, string $action, string $entityType, int $entityId, string $outcome): void
-    {
-        $statement = $database->prepare('INSERT INTO audit_logs (user_id, actor_label, action, entity_type, entity_id, outcome, ip_address) VALUES (:user_id, :actor, :action, :entity, :entity_id, :outcome, :ip)');
-        $statement->execute([
-            'user_id' => $user['id'],
-            'actor' => mb_substr($user['full_name'], 0, 160),
-            'action' => $action,
-            'entity' => $entityType,
-            'entity_id' => $entityId,
-            'outcome' => $outcome,
-            'ip' => request_ip(),
-        ]);
     }
 
     private static function requireStaff(array $user): void

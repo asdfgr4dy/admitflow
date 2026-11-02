@@ -1,6 +1,8 @@
 <?php
 declare(strict_types=1);
 
+require_once __DIR__ . '/AuditLog.php';
+
 final class AuthService
 {
     public static function loginHistory(PDO $database, string $email, array $input = []): array
@@ -69,18 +71,23 @@ final class AuthService
         $confirmation = (string) ($input['password_confirmation'] ?? '');
 
         if ($name === '' || mb_strlen($name) > 160) {
+            AuditLog::record($database, null, 'account.registration_failed', 'user', null, 'failure', ['reason' => 'invalid_name'], 'warning');
             return ['ok' => false, 'message' => 'Enter your full name.'];
         }
         if (!filter_var($email, FILTER_VALIDATE_EMAIL) || mb_strlen($email) > 254) {
+            AuditLog::record($database, null, 'account.registration_failed', 'user', null, 'failure', ['reason' => 'invalid_email'], 'warning');
             return ['ok' => false, 'message' => 'Enter a valid email address.'];
         }
         if (!SecurityPolicy::passwordLengthIsValid($password)) {
+            AuditLog::record($database, null, 'account.registration_failed', 'user', null, 'failure', ['reason' => 'password_policy'], 'warning');
             return ['ok' => false, 'message' => 'Choose a password between 10 and 200 characters.'];
         }
         if (!hash_equals($password, $confirmation)) {
+            AuditLog::record($database, null, 'account.registration_failed', 'user', null, 'failure', ['reason' => 'password_confirmation'], 'warning');
             return ['ok' => false, 'message' => 'The password confirmation does not match.'];
         }
         if (($input['privacy_consent'] ?? '') !== '1') {
+            AuditLog::record($database, null, 'account.registration_failed', 'user', null, 'failure', ['reason' => 'privacy_consent_required'], 'warning');
             return ['ok' => false, 'message' => 'Please confirm the privacy notice to create an account.'];
         }
 
@@ -99,7 +106,7 @@ final class AuthService
             $profile = $database->prepare('INSERT INTO student_profiles (user_id, privacy_consent_at) VALUES (:user_id, UTC_TIMESTAMP())');
             $profile->execute(['user_id' => $userId]);
 
-            self::audit($database, $userId, $name, 'account.registered', 'user', $userId);
+            AuditLog::record($database, ['id' => $userId], 'account.registered', 'user', $userId, 'success', [], null, $name, $userId);
             $database->commit();
 
             return ['ok' => true, 'message' => 'Your account is ready. Sign in to start your application.'];
@@ -108,6 +115,7 @@ final class AuthService
                 $database->rollBack();
             }
             if ($error->getCode() === '23000') {
+                AuditLog::record($database, null, 'account.registration_failed', 'user', null, 'failure', ['reason' => 'duplicate_email'], 'warning');
                 return ['ok' => false, 'message' => 'An account with that email address already exists.'];
             }
             throw $error;
@@ -129,6 +137,7 @@ final class AuthService
         $cooldownSeconds = max($accountRemaining, (int) $failures['ip_remaining']);
         $limited = LoginRateLimitPolicy::isLimited($failures['account'], $failures['ip'], $failures['account_latest'], (int) $failures['ip_remaining'], $current);
         if ($limited) {
+            AuditLog::record($database, null, 'auth.login_failed', 'user', null, 'failure', ['reason' => 'rate_limited'], 'warning');
             return [
                 'ok' => false,
                 'error' => 'cooldown',
@@ -139,6 +148,7 @@ final class AuthService
 
         $captchaValid = $expectedCaptcha !== '' && ctype_digit($captchaAnswer) && hash_equals($expectedCaptcha, $captchaAnswer);
         if (!$captchaValid) {
+            AuditLog::record($database, null, 'auth.login_failed', 'user', null, 'failure', ['reason' => 'captcha_invalid'], 'warning');
             return ['ok' => false, 'error' => 'captcha', 'message' => 'The security answer is incorrect. Please solve it and try again.'];
         }
 
@@ -160,11 +170,11 @@ final class AuthService
             $record->execute(['email' => $email, 'ip' => $ip, 'success' => $user === null ? 0 : 1, 'attempted_at' => $current->format('Y-m-d H:i:s')]);
 
                 if ($user === null) {
-                    self::audit($database, null, 'Unknown or unauthenticated actor', 'auth.login_failed', 'user', null, 'failure', 'warning');
+                    AuditLog::record($database, null, 'auth.login_failed', 'user', null, 'failure', [], 'warning', 'Unknown or unauthenticated actor');
                 } else {
                     $update = $database->prepare('UPDATE users SET last_login_at = :last_login_at WHERE id = :id');
                     $update->execute(['last_login_at' => gmdate('Y-m-d H:i:s'), 'id' => $user['id']]);
-                    self::audit($database, (int) $user['id'], $user['full_name'], 'auth.login_succeeded', 'user', (int) $user['id']);
+                    AuditLog::record($database, $user, 'auth.login_succeeded', 'user', (int) $user['id']);
                 }
                 $database->commit();
             } catch (Throwable $error) {
@@ -173,6 +183,10 @@ final class AuthService
                 }
                 throw $error;
             }
+        }
+
+        if (!$countAttempt) {
+            AuditLog::record($database, null, 'auth.login_failed', 'user', null, 'failure', ['reason' => 'missing_credentials'], 'warning');
         }
 
         if ($user === null) {
@@ -206,9 +220,11 @@ final class AuthService
     public static function changePassword(PDO $database, array $user, string $currentPassword, string $newPassword, string $confirmation): array
     {
         if (!SecurityPolicy::passwordLengthIsValid($newPassword)) {
+            AuditLog::record($database, $user, 'auth.password_change_failed', 'user', (int) ($user['id'] ?? 0) ?: null, 'failure', ['reason' => 'password_policy'], 'warning');
             return ['ok' => false, 'message' => 'Choose a password between 10 and 200 characters.'];
         }
         if (!hash_equals($newPassword, $confirmation)) {
+            AuditLog::record($database, $user, 'auth.password_change_failed', 'user', (int) ($user['id'] ?? 0) ?: null, 'failure', ['reason' => 'password_confirmation'], 'warning');
             return ['ok' => false, 'message' => 'The password confirmation does not match.'];
         }
 
@@ -220,6 +236,7 @@ final class AuthService
             $passwordHash = $query->fetchColumn();
             if (!is_string($passwordHash) || !password_verify($currentPassword, $passwordHash)) {
                 $database->rollBack();
+                AuditLog::record($database, $user, 'auth.password_change_failed', 'user', (int) $user['id'], 'failure', ['reason' => 'current_password_invalid'], 'warning');
                 return ['ok' => false, 'message' => 'The current password is incorrect.'];
             }
 
@@ -227,7 +244,7 @@ final class AuthService
             $update->execute(['password_hash' => password_hash($newPassword, PASSWORD_DEFAULT), 'id' => $user['id']]);
             $invalidate = $database->prepare('UPDATE password_reset_tokens SET used_at = :used_at WHERE user_id = :user_id AND used_at IS NULL');
             $invalidate->execute(['used_at' => gmdate('Y-m-d H:i:s'), 'user_id' => $user['id']]);
-            self::audit($database, (int) $user['id'], $user['full_name'], 'auth.password_changed', 'user', (int) $user['id'], 'success', 'notice');
+            AuditLog::record($database, $user, 'auth.password_changed', 'user', (int) $user['id'], 'success', [], 'notice');
             $database->commit();
 
             session_regenerate_id(true);
@@ -246,7 +263,7 @@ final class AuthService
     {
         try {
             $database->beginTransaction();
-            self::audit($database, (int) $user['id'], $user['full_name'], 'auth.logout', 'user', (int) $user['id']);
+            AuditLog::record($database, $user, 'auth.logout', 'user', (int) $user['id']);
             $database->commit();
         } catch (Throwable $error) {
             if ($database->inTransaction()) {
@@ -265,20 +282,4 @@ final class AuthService
         }
     }
 
-    private static function audit(PDO $database, ?int $userId, string $actor, string $action, ?string $entity, ?int $entityId, string $outcome = 'success', string $severity = 'info'): void
-    {
-        $statement = $database->prepare(
-            'INSERT INTO audit_logs (user_id, actor_label, action, entity_type, entity_id, outcome, severity, ip_address) VALUES (:user_id, :actor_label, :action, :entity_type, :entity_id, :outcome, :severity, :ip_address)'
-        );
-        $statement->execute([
-            'user_id' => $userId,
-            'actor_label' => mb_substr($actor, 0, 160),
-            'action' => $action,
-            'entity_type' => $entity,
-            'entity_id' => $entityId,
-            'outcome' => $outcome,
-            'severity' => $severity,
-            'ip_address' => request_ip(),
-        ]);
-    }
 }

@@ -3,6 +3,7 @@ declare(strict_types=1);
 
 require dirname(__DIR__) . '/app/Pagination.php';
 require dirname(__DIR__) . '/app/StaffService.php';
+require dirname(__DIR__) . '/app/ApplicationService.php';
 require dirname(__DIR__) . '/vendor/autoload.php';
 
 function e(mixed $value): string
@@ -13,6 +14,11 @@ function e(mixed $value): string
 function csrf_token(): string
 {
     return 'fixture-token';
+}
+
+function request_ip(): ?string
+{
+    return '192.0.2.77';
 }
 
 $assertions = 0;
@@ -32,6 +38,7 @@ $database->exec('CREATE TABLE application_documents (id INTEGER PRIMARY KEY, app
 $database->exec('CREATE TABLE document_reviews (id INTEGER PRIMARY KEY, document_id INTEGER, reviewer_id INTEGER, decision TEXT, reviewed_at TEXT)');
 $database->exec('CREATE TABLE interviews (id INTEGER PRIMARY KEY, application_id INTEGER, status TEXT, starts_at_utc TEXT, updated_at TEXT)');
 $database->exec('CREATE TABLE screening_notes (id INTEGER PRIMARY KEY, application_id INTEGER, created_at TEXT)');
+$database->exec('CREATE TABLE audit_logs (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER, actor_label TEXT, action TEXT, entity_type TEXT, outcome TEXT, severity TEXT, ip_address TEXT, details TEXT)');
 $database->exec("INSERT INTO users VALUES (1, 'Admin Fixture', 'admin', 'active'), (2, 'Student Fixture', 'student', 'active'), (3, 'Reviewer One', 'reviewer', 'active'), (4, 'Reviewer Two', 'reviewer', 'active'), (5, 'Inactive Reviewer', 'reviewer', 'inactive')");
 $database->exec("INSERT INTO academic_programs VALUES (1, 'Fixture Program')");
 $manila = new DateTimeZone('Asia/Manila');
@@ -102,7 +109,11 @@ $assert($screeningDrilldown['total'] === 8 && $screeningDrilldown['table_total']
 $idleDrilldown = StaffService::applications($database, $admin, ['drilldown' => 'attention:idle'], true, true);
 $assert($idleDrilldown['table_total'] === 2, 'idle drill-down uses distinct prepared parameters and returns the actionable rows');
 $reviewerReport = StaffService::applications($database, ['id' => 3, 'role' => 'reviewer'], [], true, true);
-$assert($reviewerReport['total'] === 6 && !in_array(8, array_column($reviewerReport['rows'], 'id'), true) && !in_array(5, array_column($reviewerReport['rows'], 'id'), true), 'reviewer report preserves existing scope for other and inactive assignments');
+$assert($reviewerReport['total'] === 6 && !in_array(8, array_column($reviewerReport['rows'], 'id'), true) && !in_array(5, array_column($reviewerReport['rows'], 'id'), true) && array_column($reviewerReport['summary']['funnel'], 'count') === [6, 5, 3, 2, 1], 'reviewer report scopes both rows and cumulative funnel counts to assigned or unassigned applications');
+$reviewerPrintReport = StaffService::applications($database, ['id' => 3, 'role' => 'reviewer'], ['view' => 'print'], true, false);
+$assert($reviewerPrintReport['total'] === 6 && count($reviewerPrintReport['rows']) === 6 && !in_array(8, array_column($reviewerPrintReport['rows'], 'id'), true), 'print-preview row mode preserves reviewer scope and returns the full matching set within the existing 5,000-row cap');
+$emptyReport = StaffService::applications($database, $admin, ['q' => 'no fixture can match this search'], true, false);
+$assert($emptyReport['total'] === 0 && array_column($emptyReport['summary']['funnel'], 'count') === [0, 0, 0, 0, 0], 'empty filtered report returns zero-safe funnel metrics');
 $database->exec("UPDATE reviewer_assignments SET unassigned_at = '2026-10-01 00:00:00' WHERE application_id = 8");
 $historicalReport = StaffService::applications($database, $admin, [], true, true);
 $historicalRow = array_values(array_filter($historicalReport['rows'], static fn (array $row): bool => (int) $row['id'] === 8))[0];
@@ -118,6 +129,20 @@ try {
     $invalidDateRange = true;
 }
 $assert($invalidDateRange, 'custom date ranges reject an end date earlier than the start date');
+$invalidReportFilter = false;
+try {
+    StaffService::applications($database, $admin, ['date_range' => 'invented'], true, true);
+} catch (DomainException) {
+    $invalidReportFilter = true;
+}
+$assert($invalidReportFilter, 'report filter parsing rejects unsupported date presets');
+$invalidReportDrilldown = false;
+try {
+    StaffService::applications($database, $admin, ['drilldown' => 'stage:invented'], true, true);
+} catch (DomainException) {
+    $invalidReportDrilldown = true;
+}
+$assert($invalidReportDrilldown, 'report filter parsing rejects unsupported funnel drilldowns');
 
 $programs = [['id' => 1, 'name' => 'Fixture Program']];
 $years = [['id' => 1, 'label' => 'Configured Intake']];
@@ -142,9 +167,63 @@ ob_start();
 require dirname(__DIR__) . '/resources/views/staff/reports.php';
 $activeReportMarkup = (string) ob_get_clean();
 $report['filters'] = $defaultReportFilters;
-$assert(substr_count($activeReportMarkup, 'Reset Filters') === 1 && !str_contains($activeReportMarkup, 'Clear all filters') && str_contains($activeReportMarkup, '2 active advanced filters') && str_contains($activeReportMarkup, 'data-clear-filter="reviewer_id"') && str_contains($activeReportMarkup, 'data-clear-filter="documents"') && str_contains($activeReportMarkup, 'data-clear-filter="drilldown"') && str_contains($activeReportMarkup, '/staff/reports?per_page=20#report-results'), 'active report filters display one reset beside chips, keep individual chip removal, and retain the page-size reset URL');
+$assert(substr_count($activeReportMarkup, 'Clear all filters') === 1 && !str_contains($activeReportMarkup, 'Reset Filters') && str_contains($activeReportMarkup, '2 active advanced filters') && str_contains($activeReportMarkup, 'data-clear-filter="reviewer_id"') && str_contains($activeReportMarkup, 'data-clear-filter="documents"') && str_contains($activeReportMarkup, 'data-clear-filter="drilldown"') && str_contains($activeReportMarkup, '/staff/reports?per_page=20#report-results'), 'active report filters display one shared-partial clear action, preserve individual chip removal, and retain the page-size reset URL');
+$reportHeaderMarkup = substr($reportMarkup, strpos($reportMarkup, '<div class="staff-heading'), strpos($reportMarkup, '<div class="report-print-heading') - strpos($reportMarkup, '<div class="staff-heading'));
+$assert(substr_count($reportHeaderMarkup, 'Print preview') === 1 && substr_count($reportHeaderMarkup, 'data-print-preview-trigger') === 1 && str_contains($reportHeaderMarkup, 'href="/staff"') && preg_match('/\sdata-print(?:\s|=|>)/', $reportHeaderMarkup) === 0 && !str_contains($reportHeaderMarkup, 'target="_blank"'), 'Reports header has one in-page Print preview button next to dashboard navigation and no whole-page print wiring');
+$assert(str_contains($reportMarkup, 'id="printPreviewModal"') && str_contains($reportMarkup, 'aria-labelledby="printPreviewModalTitle"') && str_contains($reportMarkup, 'id="printPreviewModalTitle">Print preview</h2>') && str_contains($reportMarkup, 'modal-xl modal-dialog-centered modal-fullscreen-sm-down') && str_contains($reportMarkup, 'data-preview-print') && str_contains($reportMarkup, 'title="Printable document preview"') && str_contains($reportMarkup, 'data-preview-loading') && str_contains($reportMarkup, 'data-preview-error') && str_contains($reportMarkup, 'data-preview-retry'), 'shared preview modal exposes accessible title, responsive sizing, toolbar print, iframe, loading, and recovery controls');
+$previewUrlMatch = [];
+preg_match('/data-preview-url="([^"]+)"/', $activeReportMarkup, $previewUrlMatch);
+$previewQuery = [];
+parse_str((string) parse_url(htmlspecialchars_decode((string) ($previewUrlMatch[1] ?? ''), ENT_QUOTES), PHP_URL_QUERY), $previewQuery);
+$assert(($previewQuery['q'] ?? '') === 'Fixture applicant' && ($previewQuery['status'] ?? '') === 'enrolled' && ($previewQuery['reviewer_id'] ?? '') === '3' && ($previewQuery['documents'] ?? '') === 'incomplete' && ($previewQuery['view'] ?? '') === 'print' && ($previewQuery['embed'] ?? '') === '1', 'iframe URL preserves the active report filters and adds only print and embed mode flags');
+$previewFilteredReport = StaffService::applications($database, ['id' => 3, 'role' => 'reviewer'], ['status' => 'in_screening', 'date_range' => 'last30'], true, false);
+$report = $previewFilteredReport;
+$reportPrintView = true;
+ob_start();
+require dirname(__DIR__) . '/resources/views/staff/reports-print.php';
+$printMarkup = (string) ob_get_clean();
+$previewIds = array_map('intval', array_column($previewFilteredReport['rows'], 'id'));
+$assert(str_contains($printMarkup, 'Asia/Manila') && str_contains($printMarkup, 'Application status: In Screening') && str_contains($printMarkup, 'AF-TEST-1') && str_contains($printMarkup, 'data-print-preview-sheet') && !str_contains($printMarkup, 'address_line') && !str_contains($printMarkup, 'date_of_birth') && !str_contains($printMarkup, '<script') && $previewIds === [1, 8], 'embedded print sheet uses reviewer-scoped rows including currently unassigned applications and contains no profile-sensitive fields or inline script');
+StaffService::recordReportPrintPreview($database, ['id' => 3, 'role' => 'reviewer', 'full_name' => 'Reviewer One'], $previewFilteredReport['filters'], count($previewFilteredReport['rows']));
+$previewAudit = $database->query("SELECT user_id, action, details FROM audit_logs WHERE action = 'report.print_preview_opened'")->fetch();
+$previewAuditDetails = json_decode((string) ($previewAudit['details'] ?? ''), true);
+$assert((int) $previewAudit['user_id'] === 3 && $previewAuditDetails['row_count'] === 2 && $previewAuditDetails['filters']['status'] === 'in_screening', 'print preview audit records actor, role-scoped row count, and active filters');
+StaffService::recordReportPrintPreview($database, ['id' => 3, 'role' => 'reviewer', 'full_name' => 'Reviewer One'], $previewFilteredReport['filters'], count($previewFilteredReport['rows']));
+$assert((int) $database->query("SELECT COUNT(*) FROM audit_logs WHERE action='report.print_preview_opened'")->fetchColumn() === 2, 'each separate embedded print-preview render writes exactly one preview audit event');
+$reportRouteSource = (string) file_get_contents(dirname(__DIR__) . '/public/index.php');
+$assert(str_contains($reportRouteSource, 'StaffService::recordReportPrintPreview($database, $user, $report[\'filters\']') && str_contains($reportRouteSource, "\$printView = (string) (\$_GET['view'] ?? '') === 'print';") && str_contains($reportRouteSource, "unset(\$reportInput['view'], \$reportInput['embed']);") && str_contains($reportRouteSource, "if (\$method === 'GET' && \$printView && (string) (\$_GET['embed'] ?? '') === '1')") && str_contains($reportRouteSource, "header('X-Frame-Options: SAMEORIGIN');") && str_contains($reportRouteSource, "header('X-Frame-Options: DENY');"), 'existing authorized report route logs print opens, strips mode flags, and grants SAMEORIGIN only for embedded print while default routes remain DENY');
+$assert(str_contains($reportRouteSource, "frame-src 'self' blob:") && !str_contains($reportRouteSource, 'frame-ancestors *'), 'global Content-Security-Policy retains same-origin frame sources without allowing external framing');
+$layoutSource = (string) file_get_contents(dirname(__DIR__) . '/resources/views/layout.php');
+$assert(str_contains($layoutSource, 'if (!empty($standalonePrintView))') && str_contains($layoutSource, '<body class="print-preview-document') && str_contains($layoutSource, 'require $contentView;') && str_contains($layoutSource, 'else: ?>'), 'direct and embedded print requests render a standalone shared-stylesheet page without the application shell');
+$reportJs = (string) file_get_contents(dirname(__DIR__) . '/public/assets/js/app.js');
+$assert(str_contains($reportJs, 'previewFrame.contentWindow.focus();') && str_contains($reportJs, 'previewFrame.contentWindow.print();') && str_contains($reportJs, 'button.dataset.previewOrientation') && str_contains($reportJs, "classList.toggle('print-landscape'") && str_contains($reportJs, "opener.focus({ preventScroll: true })") && str_contains($reportJs, 'setTimeout(setPreviewError, 20000)') && !str_contains($reportJs, "querySelectorAll('[data-print]')"), 'shared modal prints only its loaded iframe, applies the selected orientation there, times out safely, and restores focus without a parent print handler');
+$assert(str_contains($reportJs, "option.setAttribute('aria-pressed', selected ? 'true' : 'false')") && str_contains($reportMarkup, 'aria-pressed="true">Portrait') && str_contains($reportMarkup, 'aria-pressed="false">Landscape'), 'shared orientation controls expose Portrait as the accessible default and update their pressed state');
 $reportCss = (string) file_get_contents(dirname(__DIR__) . '/public/assets/css/app.css');
-$assert(str_contains($reportCss, 'grid-template-columns: minmax(250px, 2.2fr) repeat(4, minmax(125px, 1fr)) auto') && str_contains($reportCss, '@media (min-width: 640px) and (max-width: 1199.98px)') && str_contains($reportCss, '@media (max-width: 639.98px)') && str_contains($reportCss, 'height: 32px') && str_contains($reportCss, '.report-primary-filters .filter-field.search-field, .staff-reports-page .report-primary-filters .filter-actions { grid-column: 1 / -1; }'), 'Reports CSS defines compact controls and desktop, tablet, and two-column mobile layouts');
+$assert(str_contains($reportCss, 'grid-template-columns: minmax(250px, 2.2fr) repeat(4, minmax(125px, 1fr)) auto') && str_contains($reportCss, '@media (min-width: 640px) and (max-width: 1199.98px)') && str_contains($reportCss, '@media (max-width: 639.98px)') && str_contains($reportCss, 'grid-template-columns: repeat(2, minmax(0, 1fr))') && str_contains($reportCss, 'height: 32px') && !str_contains($reportCss, '.report-primary-filters .filter-field.search-field, .staff-reports-page .report-primary-filters .filter-actions { grid-column: 1 / -1; }'), 'Reports CSS defines compact controls and desktop, tablet, and two-column mobile layouts');
+$pageRuleCount = preg_match_all('/@page(?:\s+[a-z-]+)?\s*\{/', $reportCss);
+$assert($pageRuleCount === 2 && str_contains($reportCss, 'size: A4 portrait;') && str_contains($reportCss, '@page report-landscape') && str_contains($reportCss, 'size: A4 landscape;') && str_contains($reportCss, 'page: report-landscape;') && substr_count($reportCss, 'margin: 12mm;') >= 2 && !str_contains($reportCss, 'size: A4; margin: 14mm;') && str_contains($reportCss, '.print-preview-document .document-print-page { box-sizing: border-box; width: min(210mm, calc(100vw - 32px)); min-height: 297mm;') && str_contains($reportCss, 'thead { display: table-header-group; }') && str_contains($reportCss, 'tr { break-inside: avoid; page-break-inside: avoid; }') && str_contains($reportCss, '.no-print, .print-preview-toolbar'), 'print CSS has only portrait and named landscape A4 pages, growing paper sheets, 12mm margins, repeated table headings, row break prevention, and hidden controls');
+
+$studentPortalSource = (string) file_get_contents(dirname(__DIR__) . '/resources/views/student/portal.php');
+$studentPrintViewSource = (string) file_get_contents(dirname(__DIR__) . '/resources/views/student/print-document.php');
+$studentPrintContentSource = (string) file_get_contents(dirname(__DIR__) . '/resources/views/student/print-document-content.php');
+$assert(substr_count($studentPortalSource, 'data-print-preview-trigger') === 3 && str_contains($studentPortalSource, '/application/print?preview=1') && str_contains($studentPortalSource, '/application/acceptance-letter?preview=1') && str_contains($studentPortalSource, '/application/enrollment-confirmation?preview=1') && str_contains($studentPortalSource, "require dirname(__DIR__) . '/partials/print-preview-modal.php'") && !str_contains($studentPortalSource, 'data-print>'), 'all three existing student portal print actions use the shared modal and existing owner-authorized document routes');
+$assert(str_contains($studentPrintViewSource, 'data-print-preview-trigger') && str_contains($studentPrintViewSource, '$isPrintPreview') && str_contains($studentPrintViewSource, 'print-document-content.php') && str_contains($studentPrintContentSource, 'data-print-preview-sheet') && str_contains($studentPrintContentSource, 'Applicant information') && str_contains($studentPrintContentSource, 'Required documents') && str_contains($studentPrintContentSource, 'acceptance-letter-copy'), 'student preview iframe reuses the original printable content for summary, acceptance, and enrollment documents');
+$studentPrintableFixture = ['reference_number' => 'AF-STUDENT-PRINT', 'program_name' => 'Fixture Program', 'academic_year_label' => 'Configured Intake', 'status' => 'enrolled', 'submitted_at' => '2026-10-01 02:00:00', 'accepted_at' => '2026-10-15 02:00:00', 'applicant' => ['full_name' => 'Student Fixture', 'email' => 'student@example.test', 'mobile_number' => '09170000000', 'address_line' => '10 Fixture Road', 'municipality' => 'Test City', 'province' => 'Test Province'], 'documents' => [['name' => 'Transcript', 'review_status' => 'verified', 'uploaded_at' => '2026-10-02 02:00:00']], 'enrollment' => ['completed_at' => '2026-10-20 02:00:00']];
+$studentPrintContents = [];
+foreach ([['summary', 'Application summary', '/application/print?preview=1'], ['acceptance', 'Acceptance letter', '/application/acceptance-letter?preview=1'], ['enrollment', 'Enrollment confirmation', '/application/enrollment-confirmation?preview=1']] as [$documentType, $documentTitle, $documentPreviewUrl]) {
+    $application = $studentPrintableFixture;
+    $applicant = $studentPrintableFixture['applicant'];
+    $available = true;
+    $generatedAt = new DateTimeImmutable('now', $manila);
+    $printDocumentPreviewView = true;
+    ob_start();
+    require dirname(__DIR__) . '/resources/views/student/print-document.php';
+    $studentPrintContents[$documentType] = (string) ob_get_clean();
+}
+$assert(str_contains($studentPrintContents['summary'], 'Applicant information') && str_contains($studentPrintContents['summary'], '10 Fixture Road') && str_contains($studentPrintContents['summary'], 'Transcript') && str_contains($studentPrintContents['acceptance'], 'We are pleased to confirm that your application has been accepted.') && str_contains($studentPrintContents['acceptance'], 'AF-STUDENT-PRINT') && str_contains($studentPrintContents['enrollment'], 'This confirms that enrollment for the application below is recorded as complete.') && str_contains($studentPrintContents['enrollment'], 'Enrollment completed') && substr_count(implode('', $studentPrintContents), 'data-print-preview-sheet') === 3 && !str_contains(implode('', $studentPrintContents), 'data-print-preview-trigger'), 'all existing student print documents retain their original content in shell-free preview mode');
+$studentRoutePosition = strpos($reportRouteSource, "if (in_array(\$path, ['/application/print', '/application/acceptance-letter', '/application/enrollment-confirmation'], true))");
+$studentRouteBlock = $studentRoutePosition === false ? '' : substr($reportRouteSource, $studentRoutePosition, strpos($reportRouteSource, "if (\$path === '/portal')", $studentRoutePosition) - $studentRoutePosition);
+$assert(strpos($studentRouteBlock, '$user = require_student();') < strpos($studentRouteBlock, 'header(\'X-Frame-Options: SAMEORIGIN\');') && str_contains($studentRouteBlock, "if (\$method === 'GET' && \$printPreviewView)") && str_contains($studentRouteBlock, 'ApplicationService::printableSummary($database, (int) $user[\'id\'])') && str_contains($studentRouteBlock, "'standalonePrintView' => \$printPreviewView") && str_contains($studentRouteBlock, 'ApplicationService::canPrintAcceptance($application)') && str_contains($studentRouteBlock, 'ApplicationService::canPrintEnrollment($application)'), 'student iframe previews retain authenticated GET-only framing, ownership-scoped data, availability rules, and the existing routes');
 
 $dateRangeLabels = ['' => 'Any date', 'last7' => 'Last 7 days', 'last30' => 'Last 30 days', 'term' => 'This Term', 'custom' => 'Custom Range'];
 ob_start();
@@ -155,9 +234,72 @@ $options->set('isRemoteEnabled', false);
 $options->set('isPhpEnabled', false);
 $dompdf = new Dompdf\Dompdf($options);
 $dompdf->loadHtml($pdfHtml, 'UTF-8');
+$reportExportSource = (string) file_get_contents(dirname(__DIR__) . '/app/ReportExport.php');
+$assert(str_contains($reportExportSource, "\$dompdf->setPaper('A4', 'landscape');") && str_contains($pdfHtml, '@page { size: A4 landscape; margin: 12mm; }'), 'PDF export keeps A4 Landscape and uses the common 12mm page margin');
 $dompdf->setPaper('A4', 'landscape');
 $dompdf->render();
 $pdfBytes = $dompdf->output();
 $assert(str_starts_with($pdfBytes, '%PDF-') && !str_contains($pdfHtml, 'date_of_birth') && !str_contains($pdfHtml, 'address_line'), 'PDF renderer creates a PDF and the export template omits residential and birth-date data');
+
+$database->exec("INSERT INTO applications (id, reference_number, student_id, academic_program_id, academic_year_id, status, submitted_at, deleted_at) VALUES (98, 'AF-ARCHIVE-ACTIVE', 2, 1, 1, 'submitted', '2026-10-25 02:00:00', NULL), (99, 'AF-ARCHIVE-OLD', 2, 1, 1, 'submitted', '2026-10-24 02:00:00', '2026-10-30 00:00:00')");
+$database->exec("INSERT INTO reviewer_assignments VALUES (900, 98, 3, '2026-10-26 00:00:00')");
+$database->exec("INSERT INTO application_status_history VALUES (900, 98, 'submitted', 'in_screening', 3, '2026-10-26 00:00:00')");
+$database->exec("INSERT INTO application_documents VALUES (900, 98, 1, 0, 'verified')");
+$database->exec("INSERT INTO document_reviews VALUES (900, 900, 3, 'verified', '2026-10-26 00:00:00')");
+$database->exec("INSERT INTO interviews VALUES (900, 98, 'completed', '2026-10-27 00:00:00', '2026-10-27 00:00:00')");
+$database->exec("INSERT INTO screening_notes VALUES (900, 98, '2026-10-26 00:00:00')");
+$database->exec('CREATE TABLE enrollment_records (id INTEGER PRIMARY KEY, application_id INTEGER, status TEXT)');
+$database->exec('ALTER TABLE academic_years ADD COLUMN application_deadline TEXT');
+$database->exec('ALTER TABLE applications ADD COLUMN updated_at TEXT');
+$database->exec("UPDATE applications SET updated_at = submitted_at");
+$activeQueue = StaffService::applications($database, $admin, ['per_page' => 100]);
+$archivedQueue = StaffService::applications($database, $admin, ['archived' => 'archived', 'per_page' => 100]);
+$craftedReviewerArchive = StaffService::applications($database, ['id' => 3, 'role' => 'reviewer'], ['archived' => 'archived', 'per_page' => 100]);
+$archivedReport = StaffService::applications($database, $admin, ['archived' => 'archived'], true, true);
+$assert($activeQueue['total'] === 9 && $archivedQueue['total'] === 1 && (int) $archivedQueue['rows'][0]['id'] === 99 && $archivedQueue['filters']['archived'] === 'archived', 'administrator queue filter separates active and archived applications in service results and returned URL filters');
+$assert($craftedReviewerArchive['total'] === 8 && !in_array(99, array_map('intval', array_column($craftedReviewerArchive['rows'], 'id')), true) && !isset($craftedReviewerArchive['filters']['archived']) && $archivedReport['total'] === 9 && !in_array(99, array_map('intval', array_column($archivedReport['rows'], 'id')), true), 'reviewer queue remains active-only despite crafted archive filters and reports/print-export data excludes archived rows');
+$archiveDenied = false;
+try {
+    StaffService::archiveApplication($database, ['id' => 3, 'role' => 'reviewer', 'full_name' => 'Reviewer One'], 98);
+} catch (DomainException) {
+    $archiveDenied = true;
+}
+$assert($archiveDenied && $database->query('SELECT deleted_at FROM applications WHERE id=98')->fetchColumn() === null && (int) $database->query("SELECT COUNT(*) FROM audit_logs WHERE action='application.archive_blocked' AND user_id=3")->fetchColumn() === 1, 'non-admin archive attempts are denied and audited without changing the application');
+$database->exec("CREATE TRIGGER fail_archive_update BEFORE UPDATE OF deleted_at ON applications WHEN OLD.id=98 AND NEW.deleted_at IS NOT NULL BEGIN SELECT RAISE(ABORT, 'synthetic archive failure'); END");
+$archiveFailureCaptured = false;
+try {
+    StaffService::archiveApplication($database, $admin, 98);
+} catch (Throwable) {
+    $archiveFailureCaptured = true;
+}
+$database->exec('DROP TRIGGER fail_archive_update');
+$assert($archiveFailureCaptured && $database->query('SELECT deleted_at FROM applications WHERE id=98')->fetchColumn() === null && (int) $database->query("SELECT COUNT(*) FROM audit_logs WHERE action='application.archive_failed' AND outcome='failure'")->fetchColumn() === 1, 'unexpected archive failure rolls back and records one sanitized failure audit');
+StaffService::archiveApplication($database, $admin, 98);
+$afterArchive = StaffService::applications($database, $admin, ['per_page' => 100]);
+$archiveAudit = (int) $database->query("SELECT COUNT(*) FROM audit_logs WHERE action='application.archived'")->fetchColumn();
+$relatedHistoryRetained = (int) $database->query('SELECT COUNT(*) FROM reviewer_assignments WHERE id=900 AND application_id=98')->fetchColumn() === 1 && (int) $database->query('SELECT COUNT(*) FROM application_status_history WHERE id=900 AND application_id=98')->fetchColumn() === 1 && (int) $database->query('SELECT COUNT(*) FROM application_documents WHERE id=900 AND application_id=98')->fetchColumn() === 1 && (int) $database->query('SELECT COUNT(*) FROM document_reviews WHERE id=900 AND document_id=900')->fetchColumn() === 1 && (int) $database->query('SELECT COUNT(*) FROM interviews WHERE id=900 AND application_id=98')->fetchColumn() === 1 && (int) $database->query('SELECT COUNT(*) FROM screening_notes WHERE id=900 AND application_id=98')->fetchColumn() === 1;
+$assert($afterArchive['total'] === 8 && $database->query('SELECT deleted_at FROM applications WHERE id=98')->fetchColumn() !== null && $archiveAudit === 1 && $relatedHistoryRetained, 'admin archive sets deleted_at, hides the application from active queue, retains its documents and review history, and writes one audit event');
+$database->exec("CREATE TRIGGER fail_restore_update BEFORE UPDATE OF deleted_at ON applications WHEN OLD.id=98 AND NEW.deleted_at IS NULL BEGIN SELECT RAISE(ABORT, 'synthetic restore failure'); END");
+$restoreFailureCaptured = false;
+try {
+    StaffService::restoreApplication($database, $admin, 98);
+} catch (Throwable) {
+    $restoreFailureCaptured = true;
+}
+$database->exec('DROP TRIGGER fail_restore_update');
+$assert($restoreFailureCaptured && $database->query('SELECT deleted_at FROM applications WHERE id=98')->fetchColumn() !== null && (int) $database->query("SELECT COUNT(*) FROM audit_logs WHERE action='application.restore_failed' AND outcome='failure'")->fetchColumn() === 1, 'unexpected restore failure leaves the application archived and records one sanitized failure audit');
+StaffService::restoreApplication($database, $admin, 98);
+$afterRestore = StaffService::applications($database, $admin, ['per_page' => 100]);
+$restoreAudit = (int) $database->query("SELECT COUNT(*) FROM audit_logs WHERE action='application.restored'")->fetchColumn();
+$assert($afterRestore['total'] === 9 && $database->query('SELECT deleted_at FROM applications WHERE id=98')->fetchColumn() === null && $restoreAudit === 1, 'admin restore clears deleted_at, returns the row to active queue, and writes one audit event');
+$dashboardWithArchive = StaffService::dashboard($database, $admin);
+$chartsWithArchive = StaffService::charts($database, $admin);
+$assert($dashboardWithArchive['total'] === 9 && array_sum(array_column($chartsWithArchive['statuses'], 'total')) === 9, 'dashboard counts and charts exclude the archived row while retaining every active application');
+$database->exec("INSERT INTO users (id, full_name, role, account_status) VALUES (10, 'Archive Fixture Student', 'student', 'active')");
+$database->exec("INSERT INTO applications (id, reference_number, student_id, academic_program_id, academic_year_id, status, submitted_at, deleted_at) VALUES (77, 'AF-STUDENT-ARCHIVE', 10, 1, 1, 'submitted', '2026-10-23 02:00:00', NULL)");
+$assert(ApplicationService::current($database, 10) !== null, 'student current application lookup returns an active application before archive');
+StaffService::archiveApplication($database, $admin, 77);
+$assert(ApplicationService::current($database, 10) === null, 'student portal application lookup excludes archived applications');
+StaffService::restoreApplication($database, $admin, 77);
 
 fwrite(STDOUT, 'Report tests passed: ' . $assertions . PHP_EOL);

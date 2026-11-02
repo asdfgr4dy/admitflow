@@ -1,6 +1,8 @@
 <?php
 declare(strict_types=1);
 
+require_once __DIR__ . '/AuditLog.php';
+
 require_once __DIR__ . '/FileArchiveRestorer.php';
 
 final class BackupService
@@ -212,7 +214,7 @@ final class BackupService
             $insert->execute(['name' => $name, 'size' => $size, 'sha256' => $checksum, 'status' => $verifyStatus, 'user_id' => $actor['id'], 'verified_at' => $verifyStatus === 'verified' ? gmdate('Y-m-d H:i:s') : null, 'failure' => $verifyStatus === 'verified' ? null : 'Dump content did not pass structural verification.']);
             $backupId = (int) $database->lastInsertId();
             self::markStage('audit-insert', 'database');
-            self::audit($database, $actor, $verifyStatus === 'verified' ? 'backup.created' : 'backup.creation_verification_failed', $backupId, $verifyStatus === 'verified' ? 'success' : 'failure');
+            AuditLog::record($database, $actor, $verifyStatus === 'verified' ? 'backup.created' : 'backup.creation_verification_failed', 'backup', $backupId, $verifyStatus === 'verified' ? 'success' : 'failure', [], $verifyStatus === 'verified' ? 'notice' : 'warning');
             self::markStage('metadata-commit', 'database');
             $database->commit();
             $backupRecorded = true;
@@ -327,7 +329,7 @@ final class BackupService
             $insert->execute(['name' => $name, 'size' => $size, 'sha256' => $checksum, 'status' => $isVerified ? 'verified' : 'failed', 'user_id' => $actor['id'], 'verified_at' => $isVerified ? gmdate('Y-m-d H:i:s') : null, 'failure' => $isVerified ? null : 'File archive did not pass structure/checksum verification.']);
             $backupId = (int) $database->lastInsertId();
             self::markStage('audit-insert', 'files');
-            self::audit($database, $actor, $isVerified ? 'backup.files_created' : 'backup.file_creation_verification_failed', $backupId, $isVerified ? 'success' : 'failure');
+            AuditLog::record($database, $actor, $isVerified ? 'backup.files_created' : 'backup.file_creation_verification_failed', 'backup', $backupId, $isVerified ? 'success' : 'failure', [], $isVerified ? 'notice' : 'warning');
             self::markStage('metadata-commit', 'files');
             $database->commit();
             $archiveRecorded = true;
@@ -440,7 +442,7 @@ final class BackupService
         try {
             $update = $database->prepare('UPDATE backups SET verification_status = :status, verified_at = :verified_at, failure_message = :failure WHERE id = :id');
             $update->execute(['status' => $validStructure ? 'verified' : 'failed', 'verified_at' => $validStructure ? gmdate('Y-m-d H:i:s') : null, 'failure' => $validStructure ? null : 'Checksum or structural verification failed. Restore has not been tested.', 'id' => $backupId]);
-            self::audit($database, $actor, $validStructure ? 'backup.verified' : 'backup.verification_failed', $backupId, $validStructure ? 'success' : 'failure');
+            AuditLog::record($database, $actor, $validStructure ? 'backup.verified' : 'backup.verification_failed', 'backup', $backupId, $validStructure ? 'success' : 'failure', [], $validStructure ? 'notice' : 'warning');
             $database->commit();
         } catch (Throwable $error) {
             if ($database->inTransaction()) $database->rollBack();
@@ -856,16 +858,7 @@ final class BackupService
         $userQuery = $database->prepare('SELECT id FROM users WHERE id = :id');
         $userQuery->execute(['id' => $actor['id']]);
         $userId = $userQuery->fetchColumn();
-        $statement = $database->prepare('INSERT INTO audit_logs (user_id, actor_label, action, entity_type, entity_id, outcome, severity, ip_address) VALUES (:user_id, :actor, :action, \'backup\', :backup_id, :outcome, :severity, :ip)');
-        $statement->execute([
-            'user_id' => $userId === false ? null : $userId,
-            'actor' => mb_substr((string) ($actor['full_name'] ?? 'Administrator'), 0, 160),
-            'action' => $action,
-            'backup_id' => $backupId,
-            'outcome' => $outcome,
-            'severity' => 'critical',
-            'ip' => request_ip(),
-        ]);
+        AuditLog::record($database, ['id' => $userId === false ? null : (int) $userId], $action, 'backup', $backupId, $outcome, [], 'critical', (string) ($actor['full_name'] ?? 'Administrator'), $userId === false ? null : (int) $userId);
     }
 
     private static function databaseConfig(): array
@@ -883,17 +876,10 @@ final class BackupService
         return $config;
     }
 
-    private static function audit(PDO $database, array $actor, string $action, int $backupId, string $outcome = 'success'): void
-    {
-        $statement = $database->prepare('INSERT INTO audit_logs (user_id, actor_label, action, entity_type, entity_id, outcome, severity, ip_address) VALUES (:user_id, :actor, :action, \'backup\', :backup_id, :outcome, :severity, :ip)');
-        $statement->execute(['user_id' => $actor['id'], 'actor' => mb_substr($actor['full_name'], 0, 160), 'action' => $action, 'backup_id' => $backupId, 'outcome' => $outcome, 'severity' => $outcome === 'success' ? 'notice' : 'warning', 'ip' => request_ip()]);
-    }
-
     private static function recordFailure(PDO $database, array $actor, string $action): void
     {
         try {
-            $statement = $database->prepare('INSERT INTO audit_logs (user_id, actor_label, action, entity_type, outcome, severity, ip_address) VALUES (:user_id, :actor, :action, \'backup\', \'failure\', \'warning\', :ip)');
-            $statement->execute(['user_id' => $actor['id'], 'actor' => mb_substr($actor['full_name'], 0, 160), 'action' => $action, 'ip' => request_ip()]);
+            AuditLog::record($database, $actor, $action, 'backup', null, 'failure', [], 'warning');
         } catch (Throwable) {
             error_log('[admitflow backup] Backup failure audit event could not be recorded.');
         }

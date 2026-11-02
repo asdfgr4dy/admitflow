@@ -1,6 +1,8 @@
 <?php
 declare(strict_types=1);
 
+require_once __DIR__ . '/AuditLog.php';
+
 final class StaffAccountService
 {
     public static function create(PDO $database, array $actor, string $name, string $email, string $role): array
@@ -33,13 +35,7 @@ final class StaffAccountService
                 'token_hash' => hash('sha256', $setupToken),
                 'expires_at' => $expiresAt->format('Y-m-d H:i:s'),
             ]);
-            $audit = $database->prepare('INSERT INTO audit_logs (user_id, actor_label, action, entity_type, entity_id, outcome, severity, ip_address) VALUES (:user_id, :actor, \'user.staff_account_created\', \'user\', :entity_id, \'success\', \'notice\', :ip)');
-            $audit->execute([
-                'user_id' => $actor['id'],
-                'actor' => $actor['full_name'],
-                'entity_id' => $userId,
-                'ip' => request_ip(),
-            ]);
+            AuditLog::record($database, $actor, 'user.staff_account_created', 'user', $userId, 'success', ['role' => $role], 'notice');
             $database->commit();
 
             return ['user_id' => $userId, 'setup_path' => '/reset-password?token=' . rawurlencode($setupToken)];
@@ -55,6 +51,100 @@ final class StaffAccountService
                 }
             }
             throw $error;
+        }
+    }
+
+    public static function delete(PDO $database, array $actor, int $targetUserId): void
+    {
+        if (($actor['role'] ?? '') !== 'admin' || (int) ($actor['id'] ?? 0) < 1) {
+            self::recordDeleteAttempt($database, $actor, $targetUserId, 'user.account_delete_blocked', 'failure', ['reason' => 'Administrator access is required.']);
+            throw new DomainException('Administrator access is required to delete accounts.');
+        }
+        if ($targetUserId < 1) {
+            self::recordDeleteAttempt($database, $actor, null, 'user.account_delete_blocked', 'warning', ['reason' => 'invalid_account']);
+            throw new DomainException('Choose a valid account to delete.');
+        }
+        if ((int) $actor['id'] === $targetUserId) {
+            self::recordDeleteAttempt($database, $actor, $targetUserId, 'user.account_delete_blocked', 'warning', ['reason' => 'self_delete']);
+            throw new DomainException('You cannot delete your own account.');
+        }
+
+        $stagedAvatar = [];
+        $target = null;
+        try {
+            $database->beginTransaction();
+            $lockSuffix = $database->getAttribute(PDO::ATTR_DRIVER_NAME) === 'mysql' ? ' FOR UPDATE' : '';
+            $targetQuery = $database->prepare('SELECT id, full_name, email, role, account_status FROM users WHERE id = :id' . $lockSuffix);
+            $targetQuery->execute(['id' => $targetUserId]);
+            $target = $targetQuery->fetch();
+            if (!is_array($target)) throw new DomainException('That account could not be found.');
+
+            if ($target['role'] === 'admin' && $target['account_status'] === 'active') {
+                $activeAdminQuery = $database->query('SELECT id FROM users WHERE role = \'admin\' AND account_status = \'active\' ORDER BY id' . $lockSuffix);
+                if (count($activeAdminQuery->fetchAll(PDO::FETCH_COLUMN)) <= 1) {
+                    throw new DomainException('At least one active administrator account must remain.');
+                }
+            }
+
+            $blockingHistory = [
+                'applications' => 'SELECT COUNT(*) FROM applications WHERE student_id = :user_id',
+                'uploaded_documents' => 'SELECT COUNT(*) FROM application_documents WHERE uploaded_by = :user_id',
+                'document_reviews' => 'SELECT COUNT(*) FROM document_reviews WHERE reviewer_id = :user_id',
+                'reviewer_assignments' => 'SELECT COUNT(*) FROM reviewer_assignments WHERE reviewer_id = :reviewer_id OR assigned_by = :assigned_by',
+                'screening_notes' => 'SELECT COUNT(*) FROM screening_notes WHERE author_id = :user_id',
+                'interviews' => 'SELECT COUNT(*) FROM interviews WHERE interviewer_id = :interviewer_id OR created_by = :created_by',
+                'enrollment_records' => 'SELECT COUNT(*) FROM enrollment_records WHERE prepared_by = :user_id',
+                'announcements' => 'SELECT COUNT(*) FROM announcements WHERE created_by = :user_id',
+            ];
+            foreach ($blockingHistory as $historyName => $querySql) {
+                $historyQuery = $database->prepare($querySql);
+                $historyParameters = str_contains($querySql, ':reviewer_id')
+                    ? ['reviewer_id' => $targetUserId, 'assigned_by' => $targetUserId]
+                    : (str_contains($querySql, ':interviewer_id') ? ['interviewer_id' => $targetUserId, 'created_by' => $targetUserId] : ['user_id' => $targetUserId]);
+                $historyQuery->execute($historyParameters);
+                if ((int) $historyQuery->fetchColumn() > 0) {
+                    throw new DomainException('This account has admission history (' . $historyName . ') and must be deactivated instead.');
+                }
+            }
+
+            foreach (['student_profiles', 'notifications', 'password_reset_tokens'] as $table) {
+                $remove = $database->prepare('DELETE FROM ' . $table . ' WHERE user_id = :user_id');
+                $remove->execute(['user_id' => $targetUserId]);
+            }
+            $stagedAvatar = AvatarService::stageRemoval($targetUserId);
+            $delete = $database->prepare('DELETE FROM users WHERE id = :user_id');
+            $delete->execute(['user_id' => $targetUserId]);
+            if ($delete->rowCount() !== 1) throw new DomainException('The account changed before it could be deleted.');
+
+            AuditLog::record($database, $actor, 'user.account_deleted', 'user', $targetUserId, 'success', [
+                'deleted_account' => ['full_name' => $target['full_name'], 'email' => $target['email'], 'role' => $target['role']],
+            ], 'notice');
+            $database->commit();
+        } catch (DomainException $error) {
+            if ($database->inTransaction()) $database->rollBack();
+            AvatarService::restoreStagedRemoval($stagedAvatar);
+            self::recordDeleteAttempt($database, $actor, $targetUserId, 'user.account_delete_blocked', 'warning', ['reason' => $error->getMessage()]);
+            throw $error;
+        } catch (Throwable $error) {
+            if ($database->inTransaction()) $database->rollBack();
+            AvatarService::restoreStagedRemoval($stagedAvatar);
+            self::recordDeleteAttempt($database, $actor, $targetUserId, 'user.account_delete_failed', 'failure', ['reason' => 'transaction_failed']);
+            throw $error;
+        }
+
+        try {
+            AvatarService::finalizeStagedRemoval($stagedAvatar);
+        } catch (Throwable $error) {
+            error_log('[admitflow account deletion] Staged avatar cleanup failed (' . $error::class . ').');
+        }
+    }
+
+    private static function recordDeleteAttempt(PDO $database, array $actor, ?int $targetUserId, string $action, string $outcome, array $details): void
+    {
+        try {
+            AuditLog::record($database, $actor, $action, 'user', $targetUserId, $outcome, $details, $outcome === 'failure' ? 'warning' : 'notice');
+        } catch (Throwable $error) {
+            error_log('[admitflow account deletion] Audit event could not be recorded (' . $error::class . ').');
         }
     }
 }

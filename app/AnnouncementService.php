@@ -1,6 +1,8 @@
 <?php
 declare(strict_types=1);
 
+require_once __DIR__ . '/AuditLog.php';
+
 final class AnnouncementService
 {
     private const AUDIENCES = ['public', 'students', 'staff', 'all'];
@@ -228,9 +230,11 @@ final class AnnouncementService
     public static function delete(PDO $database, array $user, int $announcementId): void
     {
         if (!self::canManage($user)) {
+            AuditLog::record($database, $user, 'announcement.delete_blocked', 'announcement', $announcementId > 0 ? $announcementId : null, 'failure', ['reason' => 'Administrator access is required.'], 'warning');
             throw new DomainException('Administrator access is required to manage announcements.');
         }
         if ($announcementId < 1) {
+            AuditLog::record($database, $user, 'announcement.delete_blocked', 'announcement', null, 'warning', ['reason' => 'Invalid announcement identifier.'], 'warning');
             throw new DomainException('Choose a valid announcement.');
         }
         $database->beginTransaction();
@@ -242,19 +246,21 @@ final class AnnouncementService
             }
             $delete = $database->prepare('DELETE FROM announcements WHERE id = :id');
             $delete->execute(['id' => $announcementId]);
-            self::audit($database, $user, 'announcement.deleted', $announcementId);
+            AuditLog::record($database, $user, 'announcement.deleted', 'announcement', $announcementId);
             $database->commit();
         } catch (Throwable $error) {
             if ($database->inTransaction()) {
                 $database->rollBack();
             }
+            if ($error instanceof DomainException) {
+                try {
+                    AuditLog::record($database, $user, 'announcement.delete_blocked', 'announcement', $announcementId, 'warning', ['reason' => $error->getMessage()], 'warning');
+                } catch (Throwable $auditError) {
+                    error_log('[admitflow announcement] Blocked delete audit failed (' . $auditError::class . ').');
+                }
+            }
             throw $error;
         }
     }
 
-    private static function audit(PDO $database, array $user, string $action, int $announcementId): void
-    {
-        $statement = $database->prepare('INSERT INTO audit_logs (user_id, actor_label, action, entity_type, entity_id, outcome, ip_address) VALUES (:user_id, :actor, :action, \'announcement\', :entity_id, \'success\', :ip)');
-        $statement->execute(['user_id' => $user['id'], 'actor' => $user['full_name'], 'action' => $action, 'entity_id' => $announcementId, 'ip' => request_ip()]);
-    }
 }

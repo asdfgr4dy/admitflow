@@ -1,6 +1,8 @@
 <?php
 declare(strict_types=1);
 
+require_once __DIR__ . '/AuditLog.php';
+
 final class AccountSettingsService
 {
     public static function profile(PDO $database, int $userId): ?array
@@ -129,8 +131,7 @@ final class AccountSettingsService
                     throw new DomainException('Your applicant profile is not available.');
                 }
             }
-            $audit = $database->prepare('INSERT INTO audit_logs (user_id, actor_label, action, entity_type, entity_id, outcome, severity, ip_address) VALUES (:user_id, :actor, \'account.applicant_profile_updated\', \'user\', :entity_id, \'success\', \'notice\', :ip)');
-            $audit->execute(['user_id' => $user['id'], 'actor' => mb_substr($previousName, 0, 160), 'entity_id' => $user['id'], 'ip' => request_ip()]);
+            AuditLog::record($database, $user, 'account.applicant_profile_updated', 'user', (int) $user['id'], 'success', [], 'notice', $previousName);
             $database->commit();
 
             return ['ok' => true, 'message' => 'Your applicant profile has been updated.', 'full_name' => $values['full_name'], 'values' => $values, 'errors' => []];
@@ -166,8 +167,7 @@ final class AccountSettingsService
             }
             $update = $database->prepare('UPDATE users SET full_name = :full_name WHERE id = :user_id AND role = :role AND account_status = \'active\'');
             $update->execute(['full_name' => $name, 'user_id' => $user['id'], 'role' => $user['role']]);
-            $audit = $database->prepare('INSERT INTO audit_logs (user_id, actor_label, action, entity_type, entity_id, outcome, severity, ip_address) VALUES (:user_id, :actor, \'account.profile_updated\', \'user\', :entity_id, \'success\', \'notice\', :ip)');
-            $audit->execute(['user_id' => $user['id'], 'actor' => mb_substr($previousName, 0, 160), 'entity_id' => $user['id'], 'ip' => request_ip()]);
+            AuditLog::record($database, $user, 'account.profile_updated', 'user', (int) $user['id'], 'success', [], 'notice', $previousName);
             $database->commit();
 
             return ['ok' => true, 'message' => 'Your profile name has been updated.', 'full_name' => $name];

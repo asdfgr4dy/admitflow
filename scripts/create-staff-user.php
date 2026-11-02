@@ -7,6 +7,7 @@ if (PHP_SAPI !== 'cli') {
 }
 
 require dirname(__DIR__) . '/app/Database.php';
+require_once dirname(__DIR__) . '/app/AuditLog.php';
 
 $name = trim($argv[1] ?? '');
 $email = mb_strtolower(trim($argv[2] ?? ''));
@@ -37,8 +38,7 @@ try {
         'role' => $role,
     ]);
     $userId = (int) $database->lastInsertId();
-    $audit = $database->prepare('INSERT INTO audit_logs (user_id, actor_label, action, entity_type, entity_id, outcome, severity) VALUES (:user_id, \'System CLI\', \'user.staff_account_created\', \'user\', :entity_id, \'success\', \'notice\')');
-    $audit->execute(['user_id' => $userId, 'entity_id' => $userId]);
+    AuditLog::record($database, null, 'user.staff_account_created', 'user', $userId, 'success', ['role' => $role], 'notice', 'System CLI');
     $database->commit();
 
     echo "Account created. Save this generated password now; it will not be shown again.\n";

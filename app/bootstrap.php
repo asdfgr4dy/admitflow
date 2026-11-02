@@ -6,7 +6,19 @@ require_once __DIR__ . '/SecurityPolicy.php';
 
 date_default_timezone_set('Asia/Manila');
 
-$isHttps = (isset($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off') || getenv('ADMITFLOW_FORCE_SECURE_COOKIES') === '1';
+function request_is_https(?array $server = null, ?string $trustProxy = null, ?string $forceSecureCookies = null): bool
+{
+    $server ??= $_SERVER;
+    $trustProxy ??= getenv('ADMITFLOW_TRUST_PROXY') ?: '';
+    $forceSecureCookies ??= getenv('ADMITFLOW_FORCE_SECURE_COOKIES') ?: '';
+    $https = strtolower(trim((string) ($server['HTTPS'] ?? '')));
+    $directHttps = $https !== '' && $https !== 'off' && $https !== '0';
+    $proxyHttps = $trustProxy === '1' && strtolower(trim((string) ($server['HTTP_X_FORWARDED_PROTO'] ?? ''))) === 'https';
+
+    return $directHttps || $proxyHttps || $forceSecureCookies === '1';
+}
+
+$isHttps = request_is_https();
 ini_set('session.use_strict_mode', '1');
 ini_set('session.use_only_cookies', '1');
 session_set_cookie_params([

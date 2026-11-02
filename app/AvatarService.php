@@ -89,6 +89,53 @@ final class AvatarService
         if (is_file($pointer)) unlink($pointer);
     }
 
+    public static function stageRemoval(int $userId): array
+    {
+        if ($userId < 1) throw new DomainException('The account could not be verified.');
+        $root = self::storageRoot(false);
+        if ($root === null) return [];
+
+        $paths = [];
+        $name = self::currentName($root, $userId);
+        if ($name !== null) {
+            $avatar = self::safeAvatarPath($root, $userId, $name);
+            if ($avatar !== null && is_file($avatar)) $paths[] = $avatar;
+        }
+        $pointer = self::pointerPath($root, $userId);
+        if (is_file($pointer)) $paths[] = $pointer;
+
+        $staged = [];
+        try {
+            foreach ($paths as $path) {
+                $temporaryPath = $path . '.delete-' . bin2hex(random_bytes(8));
+                if (!rename($path, $temporaryPath)) throw new RuntimeException('The account avatar could not be staged for deletion.');
+                $staged[] = ['original' => $path, 'temporary' => $temporaryPath];
+            }
+            return $staged;
+        } catch (Throwable $error) {
+            self::restoreStagedRemoval($staged);
+            throw $error;
+        }
+    }
+
+    public static function restoreStagedRemoval(array $staged): void
+    {
+        foreach (array_reverse($staged) as $entry) {
+            if (isset($entry['temporary'], $entry['original']) && is_file($entry['temporary'])) {
+                @rename($entry['temporary'], $entry['original']);
+            }
+        }
+    }
+
+    public static function finalizeStagedRemoval(array $staged): void
+    {
+        foreach ($staged as $entry) {
+            if (isset($entry['temporary']) && is_file($entry['temporary']) && !unlink($entry['temporary'])) {
+                throw new RuntimeException('The deleted account avatar could not be removed from private storage.');
+            }
+        }
+    }
+
     public static function currentPath(int $userId): ?string
     {
         if ($userId < 1) return null;

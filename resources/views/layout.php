@@ -61,6 +61,22 @@ if ($signedInUser !== null) {
     };
 }
 ?>
+<?php if (!empty($standalonePrintView)): ?>
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title><?= e($title ?? 'Print preview') ?> | admitflow</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css" rel="stylesheet">
+    <link href="/assets/css/app.css?v=<?= e($assetVersion('/assets/css/app.css')) ?>" rel="stylesheet">
+</head>
+<body class="print-preview-document<?= !empty($reportPrintView) ? ' report-print-document' : '' ?>">
+    <?php require $contentView; ?>
+</body>
+</html>
+<?php else: ?>
 <!doctype html>
 <html lang="en">
 <head>
@@ -73,7 +89,7 @@ if ($signedInUser !== null) {
     <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css" rel="stylesheet">
     <link href="/assets/css/app.css?v=<?= e($assetVersion('/assets/css/app.css')) ?>" rel="stylesheet">
 </head>
-<body class="<?= $signedInUser !== null ? 'authenticated-layout' : 'public-layout' ?>">
+<body class="<?= $signedInUser !== null ? 'authenticated-layout' : 'public-layout' ?><?= !empty($reportPrintView) ? ' report-print-view' : '' ?>">
 <?php if ($flashMessage !== null): ?>
     <div class="toast-container position-fixed top-0 end-0 p-3 admitflow-toast-container" data-toast-container aria-live="<?= $toastRole === 'alert' ? 'assertive' : 'polite' ?>" aria-atomic="true">
         <div class="toast admitflow-toast toast-<?= e($toastType) ?>" role="<?= $toastRole ?>" data-toast data-bs-autohide="<?= $toastType === 'danger' ? 'false' : 'true' ?>" data-bs-delay="<?= $toastDelay ?>">
@@ -219,3 +235,4 @@ if ($signedInUser !== null) {
 <script src="/assets/js/app.js?v=<?= e($assetVersion('/assets/js/app.js')) ?>" defer></script>
 </body>
 </html>
+<?php endif; ?>

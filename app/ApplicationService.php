@@ -1,6 +1,8 @@
 <?php
 declare(strict_types=1);
 
+require_once __DIR__ . '/AuditLog.php';
+
 final class ApplicationService
 {
     public static function canProgressToStep(int $requestedStep, int $furthestStep): bool
@@ -186,8 +188,7 @@ final class ApplicationService
             }
             $documentIds = self::storeUploads($database, $studentId, $applicationId, (int) $application['academic_program_id'], (int) $application['academic_year_id'], $uploads, $movedFiles, false);
             foreach ($documentIds as $documentId) {
-                $audit = $database->prepare('INSERT INTO audit_logs (user_id, actor_label, action, entity_type, entity_id, outcome, ip_address) SELECT id, full_name, \'document.replaced\', \'application_document\', :document_id, \'success\', :ip FROM users WHERE id = :user_id');
-                $audit->execute(['document_id' => $documentId, 'ip' => request_ip(), 'user_id' => $studentId]);
+                AuditLog::record($database, ['id' => $studentId], 'document.replaced', 'application_document', $documentId);
                 $notification = $database->prepare('INSERT INTO notifications (user_id, type, title, message, related_type, related_id) VALUES (:user_id, \'document_replaced\', \'Replacement document received\', \'Your replacement document was uploaded and is waiting for review.\', \'application_document\', :document_id)');
                 $notification->execute(['user_id' => $studentId, 'document_id' => $documentId]);
             }
@@ -212,8 +213,7 @@ final class ApplicationService
     private static function auditReplacementFailure(PDO $database, int $studentId, int $applicationId): void
     {
         try {
-            $failureAudit = $database->prepare('INSERT INTO audit_logs (user_id, actor_label, action, entity_type, entity_id, outcome, severity, ip_address) SELECT id, full_name, \'document.replacement_failed\', \'application\', :application_id, \'failure\', \'warning\', :ip FROM users WHERE id = :user_id');
-            $failureAudit->execute(['application_id' => $applicationId > 0 ? $applicationId : null, 'ip' => request_ip(), 'user_id' => $studentId]);
+            AuditLog::record($database, ['id' => $studentId], 'document.replacement_failed', 'application', $applicationId > 0 ? $applicationId : null, 'failure', [], 'warning');
         } catch (Throwable) {
         }
     }
@@ -383,7 +383,7 @@ final class ApplicationService
                     'profile_snapshot' => $applicantProfileSnapshot,
                 ]);
                 $applicationId = (int) $database->lastInsertId();
-                self::audit($database, $studentId, 'application.created', 'application', $applicationId);
+                AuditLog::record($database, ['id' => $studentId], 'application.created', 'application', $applicationId);
             } else {
                 $applicationId = (int) $existing['id'];
                 $update = $database->prepare(
@@ -399,13 +399,13 @@ final class ApplicationService
                     'application_id' => $applicationId,
                     'student_id' => $studentId,
                 ]);
-                self::audit($database, $studentId, 'application.draft_updated', 'application', $applicationId);
+                AuditLog::record($database, ['id' => $studentId], 'application.draft_updated', 'application', $applicationId);
             }
 
             if (!empty($files['name']) && is_array($files['name'])) {
                 $uploadedDocumentIds = self::storeUploads($database, $studentId, $applicationId, $programId, $yearId, $files, $movedFiles, $existing === null || $existing['status'] === 'draft');
                 foreach ($uploadedDocumentIds as $documentId) {
-                    self::audit($database, $studentId, 'document.uploaded', 'application_document', $documentId);
+                    AuditLog::record($database, ['id' => $studentId], 'document.uploaded', 'application_document', $documentId);
                 }
             }
 
@@ -431,7 +431,7 @@ final class ApplicationService
                 $history->execute(['application_id' => $applicationId, 'user_id' => $studentId]);
                 $notification = $database->prepare('INSERT INTO notifications (user_id, type, title, message, related_type, related_id) VALUES (:user_id, \'application_submitted\', \'Application submitted\', \'Your application was submitted successfully. The Admission Office will review it and update your portal.\', \'application\', :application_id)');
                 $notification->execute(['user_id' => $studentId, 'application_id' => $applicationId]);
-                self::audit($database, $studentId, 'application.submitted', 'application', $applicationId);
+                AuditLog::record($database, ['id' => $studentId], 'application.submitted', 'application', $applicationId);
             }
 
             $database->commit();
@@ -545,17 +545,4 @@ final class ApplicationService
         return $uploadedDocumentIds;
     }
 
-    private static function audit(PDO $database, int $studentId, string $action, string $entityType, int $entityId): void
-    {
-        $statement = $database->prepare(
-            'INSERT INTO audit_logs (user_id, actor_label, action, entity_type, entity_id, outcome, severity, ip_address) SELECT id, full_name, :action, :entity_type, :entity_id, \'success\', \'info\', :ip FROM users WHERE id = :user_id'
-        );
-        $statement->execute([
-            'action' => $action,
-            'entity_type' => $entityType,
-            'entity_id' => $entityId,
-            'ip' => request_ip(),
-            'user_id' => $studentId,
-        ]);
-    }
 }

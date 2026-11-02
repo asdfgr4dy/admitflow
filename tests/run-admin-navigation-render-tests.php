@@ -109,10 +109,48 @@ $assert(str_contains($queueFilterSource, 'class="application-filters"') && str_c
 $assert(str_contains($queueFilterSource, 'academic-table-wrap') && str_contains($queueFilterSource, 'staff-table academic-table') && str_contains((string) file_get_contents(dirname(__DIR__) . '/resources/views/staff/applications.php'), 'academic-management-card'), 'Application Queue reuses the shared page container and compact responsive table');
 $reportViewSource = (string) file_get_contents(dirname(__DIR__) . '/resources/views/staff/reports.php');
 $backupViewSource = (string) file_get_contents(dirname(__DIR__) . '/resources/views/staff/backups.php');
-$assert(str_contains($reportViewSource, 'academic-page-heading') && str_contains($reportViewSource, 'academic-table-wrap') && str_contains($reportViewSource, '/staff/reports.csv') && str_contains($reportViewSource, 'data-print'), 'Reports uses shared heading/table styling and retains CSV and print actions');
+$assert(str_contains($reportViewSource, 'academic-page-heading') && str_contains($reportViewSource, 'academic-table-wrap') && str_contains($reportViewSource, '/staff/reports.csv') && str_contains($reportViewSource, 'data-print-preview-trigger') && str_contains($reportViewSource, 'print-preview-modal.php') && preg_match('/\sdata-print(?:\s|=|>)/', $reportViewSource) === 0, 'Reports keeps shared styling and CSV export while printing through the shared in-page preview modal');
 $assert(substr_count($backupViewSource, 'staff-table academic-table') === 3 && str_contains($backupViewSource, 'RESTORE FILES') && str_contains($backupViewSource, 'data-confirm=') && str_contains($backupViewSource, 'restore-warning'), 'Backup tables share compact styling while restore confirmations and warnings remain present');
 $userFilterSource = (string) file_get_contents(dirname(__DIR__) . '/resources/views/staff/users.php');
 $assert(str_contains($userFilterSource, 'class="filter-bar user-filter-bar"') && str_contains($userFilterSource, 'data-auto-filter-form') && str_contains($userFilterSource, 'active-filter-chips.php'), 'User Administration retains its existing shared filter and active-chip components');
+$assert(str_contains($userFilterSource, 'action="/staff/user/delete"') && str_contains($userFilterSource, 'data-submit-once') && str_contains($userFilterSource, 'Delete this account permanently? This is allowed only when the account has no admission history. Accounts with history must be deactivated instead.') && str_contains($userFilterSource, 'Deactivate this account?'), 'account deletion and deactivation use CSRF-protected one-shot forms with explicit impact confirmations');
+$applicationQueueSource = (string) file_get_contents(dirname(__DIR__) . '/resources/views/staff/application-queue.php');
+$assert(str_contains($applicationQueueSource, "\$showArchivedFilter = (\$user['role'] ?? '') === 'admin'") && str_contains($applicationQueueSource, 'name="archived"') && str_contains($applicationQueueSource, "'/staff/application/archive'") && str_contains($applicationQueueSource, "'/staff/application/restore'") && str_contains($applicationQueueSource, 'data-confirm='), 'admin queue alone renders the archived filter and confirmed archive/restore actions');
+$queueRenderContext = static function (array $queueUser, array $queueFilters): string {
+    $user = $queueUser;
+    if (($user['role'] ?? '') !== 'admin') unset($queueFilters['archived']);
+    $applicationQueuePath = '/admin/applications';
+    $statusLabels = ['submitted' => 'Submitted'];
+    $programs = [];
+    $years = [];
+    $reviewers = [];
+    $query = $queueFilters + ['per_page' => 10];
+    $pagination = Pagination::make(25, ['per_page' => 10]);
+    $pagination['base_url'] = $applicationQueuePath;
+    $pagination['query'] = $query;
+    $applications = ['rows' => [['id' => 88, 'full_name' => 'Archived Applicant', 'reference_number' => 'AF-ARCH-88', 'program_name' => null, 'year_label' => null, 'submitted_at' => null, 'uploaded_documents' => 0, 'required_documents' => 0, 'reviewer_name' => null, 'status' => 'submitted']], 'filters' => $queueFilters, 'pagination' => $pagination];
+    ob_start();
+    require dirname(__DIR__) . '/resources/views/staff/application-queue.php';
+    return (string) ob_get_clean();
+};
+$adminArchivedQueueMarkup = $queueRenderContext(['id' => 1, 'role' => 'admin'], ['archived' => 'archived']);
+$reviewerArchivedQueueMarkup = $queueRenderContext(['id' => 3, 'role' => 'reviewer'], ['archived' => 'archived']);
+$assert(str_contains($adminArchivedQueueMarkup, 'name="archived"') && str_contains($adminArchivedQueueMarkup, 'Archived applications') && str_contains($adminArchivedQueueMarkup, 'data-clear-filter="archived"') && str_contains($adminArchivedQueueMarkup, 'archived=archived'), 'admin archived filter renders selected state, removable chip, and filter-preserving pagination URL');
+$assert(!str_contains($reviewerArchivedQueueMarkup, 'name="archived"') && !str_contains($reviewerArchivedQueueMarkup, 'data-clear-filter="archived"') && !str_contains($reviewerArchivedQueueMarkup, 'archived=archived'), 'reviewer queue never renders the archived filter, chip, or archived URL state');
+$detailViewSource = (string) file_get_contents(dirname(__DIR__) . '/resources/views/staff/application-detail.php');
+$assert(str_contains($detailViewSource, "action=\"<?= \$isArchivedApplication ? '/staff/application/restore' : '/staff/application/archive' ?>\"") && str_contains($detailViewSource, 'name="_csrf"') && str_contains($detailViewSource, 'data-submit-once') && str_contains($detailViewSource, 'data-confirm="<?= $isArchivedApplication ?'), 'application detail exposes CSRF-protected admin archive/restore forms with the shared confirmation hook');
+$assert(str_contains($routeSource, "\$includeArchived = \$user['role'] === 'admin' && (string) (\$_GET['archived'] ?? '') === '1'") && str_contains($routeSource, '$includeArchived);') && str_contains($routeSource, "AuditLog::recordOncePerWindow(\$database, \$user, 'application.viewed'"), 'detail route grants archived lookup only from explicit admin mode and records eligible views');
+$assert(str_contains($routeSource, "if (\$method === 'POST')") && str_contains($routeSource, 'verify_csrf();') && str_contains($routeSource, "\$path === '/staff/user/delete'") && str_contains($routeSource, "\$path === '/staff/application/archive' || \$path === '/staff/application/restore'") && str_contains($routeSource, "\$user['role'] !== 'admin'") && str_contains($routeSource, 'StaffAccountService::delete') && str_contains($routeSource, 'StaffService::archiveApplication') && str_contains($routeSource, 'StaffService::restoreApplication'), 'delete/archive/restore POST handlers retain shared CSRF validation and explicit admin guards before service calls');
+$changedViews = [
+    (string) file_get_contents(dirname(__DIR__) . '/resources/views/staff/users.php'),
+    $applicationQueueSource,
+    $detailViewSource,
+];
+$inlineMarkupFound = false;
+foreach ($changedViews as $viewSource) {
+    $inlineMarkupFound = $inlineMarkupFound || preg_match('/<script\b|<style\b|\son[a-z]+\s*=/i', $viewSource) === 1;
+}
+$assert(!$inlineMarkupFound, 'changed views add no inline scripts, style tags, or inline event handlers');
 $managementType = 'programs';
 $createFormType = 'program';
 $createFormValues = ['program_id' => '4', 'code' => 'ENGX', 'name' => 'Engineering Extension', 'description' => 'Retained description', 'is_active' => '1'];
@@ -170,6 +208,13 @@ ob_start();
 require dirname(__DIR__) . '/resources/views/staff/users.php';
 $populatedUsersMarkup = (string) ob_get_clean();
 $assert(str_contains($populatedUsersMarkup, 'data-drawer-edit="#accountEditDrawer"') && str_contains($populatedUsersMarkup, '&quot;user_id&quot;:14') && str_contains($populatedUsersMarkup, '&quot;role&quot;:&quot;reviewer&quot;'), 'account Edit control carries the selected record into the shared drawer without changing its save contract');
+$assert(str_contains($populatedUsersMarkup, 'action="/staff/user/delete"') && str_contains($populatedUsersMarkup, 'data-confirm="Delete this account permanently? This is allowed only when the account has no admission history. Accounts with history must be deactivated instead."') && str_contains($populatedUsersMarkup, 'data-confirm="Deactivate this account? The account and its history will be retained."') && str_contains($populatedUsersMarkup, 'name="_csrf"'), 'administrator account rows render CSRF-protected Delete and Deactivate actions with distinct impact confirmations');
+$user = ['id' => 3, 'full_name' => 'Fixture Reviewer', 'role' => 'reviewer'];
+ob_start();
+require dirname(__DIR__) . '/resources/views/staff/users.php';
+$nonAdminUserMarkup = (string) ob_get_clean();
+$assert(!str_contains($nonAdminUserMarkup, 'action="/staff/user/delete"') && !str_contains($nonAdminUserMarkup, 'Delete this account permanently?'), 'non-admin account views never render a Delete action');
+$user = ['id' => 1, 'full_name' => 'Fixture Admin', 'role' => 'admin'];
 
 $announcements = [['id' => 21, 'title' => 'Fixture announcement', 'body' => 'Details for students', 'audience' => 'students', 'starts_at' => '2026-11-05 01:00:00', 'ends_at' => null, 'is_published' => 1, 'state' => 'scheduled', 'creator_name' => 'Fixture Admin', 'updated_at' => '2026-11-01 10:00:00']];
 $selectedState = '';
