@@ -1101,6 +1101,12 @@ try {
             'acceptance' => ApplicationService::canPrintAcceptance($application),
             'enrollment' => ApplicationService::canPrintEnrollment($application),
         });
+        if ($printPreviewView && $available && is_array($application)) {
+            AuditLog::record($database, $user, 'student.document.print_preview_opened', 'application', (int) $application['id'], 'success', [
+                'document_type' => $documentType,
+                'application_reference' => (string) ($application['reference_number'] ?? ''),
+            ], 'notice');
+        }
         header('Cache-Control: private, no-store, no-cache, must-revalidate, max-age=0');
         header('Pragma: no-cache');
         render_page('student/print-document', [

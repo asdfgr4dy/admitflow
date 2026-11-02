@@ -1,21 +1,30 @@
-<article class="document-print-page" data-print-preview-sheet>
+<?php
+$documentReference = trim((string) ($application['reference_number'] ?? '')) ?: 'Not assigned';
+$isDraftApplication = $documentType === 'summary' && ($application['status'] ?? '') === 'draft';
+$generatedLabel = $generatedAt->format('F j, Y g:i A');
+$programLabel = (string) ($application['program_name'] ?? 'Not recorded');
+$academicYearLabel = (string) ($application['academic_year_label'] ?? 'Not recorded');
+?>
+<article class="document-print-page document-student-sheet<?= $isDraftApplication ? ' is-draft' : '' ?>" data-print-preview-sheet data-document-reference="<?= e($documentReference) ?>">
+    <?php if ($isDraftApplication): ?><p class="document-draft-notice"><strong>DRAFT, not submitted.</strong> Draft application summary. This application has not been submitted and does not represent an admission decision.</p><?php endif; ?>
     <header class="document-print-header">
-        <p>AdmitFlow</p>
-        <p>Admission Office</p>
+        <div class="document-print-wordmark"><span>AdmitFlow</span><small>Admission Office</small></div>
         <h1><?= e($documentTitle) ?></h1>
     </header>
-    <p class="document-print-meta">Generated <?= e($generatedAt->format('F j, Y g:i A')) ?> Asia/Manila</p>
+    <dl class="document-reference-strip">
+        <div class="document-print-reference"><dt>Application reference</dt><dd class="document-print-reference-value"><?= e($documentReference) ?></dd></div>
+        <div><dt>Date generated</dt><dd><?= e($generatedLabel) ?> Asia/Manila</dd></div>
+        <?php if ($documentType === 'acceptance' && !empty($application['accepted_at'])): ?><div><dt>Date of decision</dt><dd><?= e($dateLabel($application['accepted_at'])) ?></dd></div><?php endif; ?>
+    </dl>
 
     <?php if ($documentType === 'summary'): ?>
-        <?php if (($application['status'] ?? '') === 'draft'): ?><p class="document-draft-notice"><strong>Draft application summary.</strong> This application has not been submitted and does not represent an admission decision.</p><?php endif; ?>
         <section class="document-print-section">
             <h2>Applicant information</h2>
             <dl class="document-print-details">
                 <div><dt>Applicant name</dt><dd><?= e($applicant['full_name'] ?? '') ?></dd></div>
                 <div><dt>Email</dt><dd><?= e($applicant['email'] ?? '') ?></dd></div>
                 <div><dt>Mobile number</dt><dd><?= e($applicant['mobile_number'] ?? 'Not provided') ?></dd></div>
-                <div><dt>Application reference</dt><dd><?= e($application['reference_number'] ?: 'Not assigned') ?></dd></div>
-                <div class="document-print-detail-wide"><dt>Residential address</dt><dd><?= e(implode(', ', array_filter([$applicant['address_line'] ?? '', $applicant['municipality'] ?? '', $applicant['province'] ?? ''])) ?: 'Not provided') ?></dd></div>
+                <div><dt>Residential address</dt><dd><?= e(implode(', ', array_filter([$applicant['address_line'] ?? '', $applicant['municipality'] ?? '', $applicant['province'] ?? ''])) ?: 'Not provided') ?></dd></div>
             </dl>
         </section>
         <section class="document-print-section">
@@ -33,34 +42,38 @@
         <section class="document-print-section">
             <h2>Required documents</h2>
             <?php if (($application['documents'] ?? []) === []): ?><p>No required documents are listed for this application.</p><?php else: ?>
-                <table class="document-print-table"><thead><tr><th>Document</th><th>Review status</th><th>Uploaded</th></tr></thead><tbody>
+                <table class="document-print-table"><thead><tr><th scope="col">Document</th><th scope="col">Review status</th><th scope="col">Uploaded</th></tr></thead><tbody>
                 <?php foreach ($application['documents'] as $document): ?><tr><td><?= e($document['name']) ?></td><td><?= e(ucwords(str_replace('_', ' ', $document['review_status'] ?? 'not uploaded'))) ?></td><td><?= e($dateLabel($document['uploaded_at'] ?? null)) ?></td></tr><?php endforeach; ?>
                 </tbody></table>
             <?php endif; ?>
         </section>
     <?php elseif ($documentType === 'acceptance'): ?>
-        <p><?php if (!empty($application['accepted_at'])): ?>Decision date <?= e($dateLabel($application['accepted_at'])) ?><?php else: ?>Generated <?= e($generatedAt->format('F j, Y')) ?><?php endif; ?></p>
-        <section class="document-print-section acceptance-letter-copy">
-            <p>Dear <?= e($applicant['full_name'] ?? '') ?>,</p>
+        <section class="document-letter-copy acceptance-letter-copy">
+            <p class="document-letter-date"><?php if (!empty($application['accepted_at'])): ?><?= e($dateLabel($application['accepted_at'])) ?><?php else: ?><?= e($generatedAt->format('F j, Y')) ?><?php endif; ?></p>
+            <p class="document-letter-salutation">Dear <?= e($applicant['full_name'] ?? '') ?>,</p>
+            <p class="document-letter-subject"><strong>Subject: Acceptance to <?= e($programLabel) ?>, <?= e($academicYearLabel) ?></strong></p>
             <p>We are pleased to confirm that your application has been accepted.</p>
-            <dl class="document-print-details">
-                <div><dt>Application reference</dt><dd><?= e($application['reference_number'] ?: 'Not assigned') ?></dd></div>
-                <div><dt>Approved program</dt><dd><?= e($application['program_name'] ?? 'Not recorded') ?></dd></div>
-                <div><dt>Academic year or intake</dt><dd><?= e($application['academic_year_label'] ?? 'Not recorded') ?></dd></div>
-            </dl>
-            <div class="document-print-signoff"><p>Sincerely,</p><p><strong>Admission Office</strong></p><p>AdmitFlow</p></div>
+            <table class="document-letter-details"><tbody>
+                <tr><th scope="row">Reference</th><td><?= e($documentReference) ?></td></tr>
+                <tr><th scope="row">Program</th><td><?= e($programLabel) ?></td></tr>
+                <tr><th scope="row">Academic year</th><td><?= e($academicYearLabel) ?></td></tr>
+            </tbody></table>
+            <div class="document-print-signoff"><p>Sincerely,</p><div class="document-signature-line" aria-hidden="true"></div><p><strong>Admission Office, AdmitFlow</strong></p></div>
         </section>
     <?php else: ?>
-        <section class="document-print-section">
+        <section class="document-letter-copy">
+            <p class="document-letter-date"><?= e($dateLabel($application['enrollment']['completed_at'] ?? null)) ?></p>
+            <p class="document-letter-salutation">Dear <?= e($applicant['full_name'] ?? '') ?>,</p>
+            <p class="document-letter-subject"><strong>Subject: Enrollment confirmation</strong></p>
             <p>This confirms that enrollment for the application below is recorded as complete.</p>
-            <dl class="document-print-details">
-                <div><dt>Applicant name</dt><dd><?= e($applicant['full_name'] ?? '') ?></dd></div>
-                <div><dt>Application reference</dt><dd><?= e($application['reference_number'] ?: 'Not assigned') ?></dd></div>
-                <div><dt>Program</dt><dd><?= e($application['program_name'] ?? 'Not recorded') ?></dd></div>
-                <div><dt>Academic year or intake</dt><dd><?= e($application['academic_year_label'] ?? 'Not recorded') ?></dd></div>
-                <div><dt>Enrollment completed</dt><dd><?= e($dateLabel($application['enrollment']['completed_at'] ?? null)) ?></dd></div>
-            </dl>
-            <div class="document-print-signoff"><p>Sincerely,</p><p><strong>Admission Office</strong></p><p>AdmitFlow</p></div>
+            <table class="document-letter-details"><tbody>
+                <tr><th scope="row">Reference</th><td><?= e($documentReference) ?></td></tr>
+                <tr><th scope="row">Program</th><td><?= e($programLabel) ?></td></tr>
+                <tr><th scope="row">Academic year</th><td><?= e($academicYearLabel) ?></td></tr>
+            </tbody></table>
+            <p class="document-enrollment-date">Enrollment completed: <?= e($dateLabel($application['enrollment']['completed_at'] ?? null)) ?></p>
+            <div class="document-print-signoff"><p>Sincerely,</p><div class="document-signature-line" aria-hidden="true"></div><p><strong>Admission Office, AdmitFlow</strong></p></div>
         </section>
     <?php endif; ?>
+    <footer class="document-running-footer"><p>AdmitFlow · Admission Office · <?= e($documentReference) ?><?= $isDraftApplication ? ' · Draft' : '' ?></p></footer>
 </article>

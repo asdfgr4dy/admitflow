@@ -817,7 +817,7 @@ h1 em, h2 em { color: #8B5C15; font-style: italic; }
 .document-print-actions { display: flex; flex-wrap: wrap; gap: 10px; margin-bottom: 22px; }
 .print-preview-document { min-width: 0; margin: 0; background: #DDE3E1; }
 .print-preview-document .student-print-document { max-width: none; padding: 24px 0; }
-.print-preview-document .document-print-page { box-sizing: border-box; width: min(210mm, calc(100vw - 32px)); min-height: 297mm; margin: 0 auto; padding: 14mm 12mm; border: 0; background: #FFFFFF; box-shadow: 0 8px 30px rgba(20,35,42,.16); }
+.print-preview-document .document-print-page { box-sizing: border-box; width: min(210mm, calc(100vw - 32px)); min-height: 297mm; margin: 0 auto; padding: 16mm; border: 0; background: #FFFFFF; box-shadow: 0 8px 30px rgba(20,35,42,.16); }
 .print-preview-document .document-print-page.print-landscape { width: min(297mm, calc(100vw - 32px)); min-height: 210mm; }
 .document-unavailable { max-width: 660px; padding: 26px 0; }
 .document-unavailable h1 { margin-bottom: 10px; color: var(--navy); font-family: var(--serif); font-size: 2rem; }
@@ -826,6 +826,44 @@ h1 em, h2 em { color: #8B5C15; font-style: italic; }
 .acceptance-letter-copy > p { margin-bottom: 6mm; }
 .student-print-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 9px; margin-top: 16px; }
 .student-print-unavailable { color: var(--muted); font-size: .78rem; }
+
+.document-student-sheet { display: flex; min-height: calc(297mm - 32mm); flex-direction: column; color: #172D3A; font-family: var(--sans); font-size: 10pt; line-height: 1.4; }
+.document-print-header { margin: 0 0 6mm; padding: 0 0 3mm; border-bottom: 1px solid #173247; }
+.document-print-wordmark { display: grid; gap: 1mm; color: #173247; }
+.document-print-wordmark span { font-size: 14pt; font-weight: 800; }
+.document-print-wordmark small { font-size: 8pt; font-weight: 600; }
+.document-student-sheet .document-print-header h1 { margin: 5mm 0 0; color: #173247; font-family: var(--serif); font-size: 21pt; font-weight: 400; line-height: 1.15; }
+.document-reference-strip { display: grid; grid-template-columns: minmax(0,1.1fr) minmax(0,1.4fr) minmax(0,1fr); gap: 4mm; margin: 0 0 6mm; padding: 0 0 3mm; border-bottom: 1px solid #C8D1D5; }
+.document-reference-strip > div { min-width: 0; }
+.document-reference-strip dt, .document-print-details dt { margin: 0 0 1mm; color: #586770; font-size: 8pt; font-weight: 700; }
+.document-reference-strip dd, .document-print-details dd { margin: 0; color: #172D3A; font-size: 9.5pt; overflow-wrap: anywhere; }
+.document-print-reference-value { font-variant-numeric: tabular-nums; }
+.document-print-section { margin: 0 0 5mm; }
+.document-student-sheet .document-print-section h2 { margin: 0 0 2mm; color: #173247; font-family: var(--serif); font-size: 13pt; font-weight: 400; line-height: 1.2; }
+.document-print-details { display: grid; grid-template-columns: repeat(2, minmax(0,1fr)); gap: 2.5mm 8mm; margin: 0; }
+.document-print-details > div { min-width: 0; break-inside: avoid; page-break-inside: avoid; }
+.document-print-details dt { font-size: 8pt; }
+.document-print-details dd { font-size: 9.5pt; line-height: 1.3; }
+.document-print-detail-wide { grid-column: 1 / -1; }
+.document-print-table, .document-letter-details { width: 100%; border-collapse: collapse; font-size: 9pt; }
+.document-print-table th, .document-print-table td, .document-letter-details th, .document-letter-details td { padding: 2mm 2.5mm; border-bottom: 1px solid #C7CDD0; text-align: left; vertical-align: top; }
+.document-print-table th, .document-letter-details th { color: #283944; font-size: 8pt; font-weight: 700; }
+.document-draft-notice { margin: 0 0 5mm; padding: 2.5mm 3mm; border-left: 3px solid #6B7378; background: #F0F1F1; color: #111111; font-size: 9pt; }
+.document-letter-copy { color: #111111; font-size: 11pt; line-height: 1.55; }
+.document-letter-copy > p { margin: 0 0 5mm; }
+.document-letter-date { text-align: right; }
+.document-letter-subject { margin-top: 4mm !important; }
+.document-letter-details { margin: 3mm 0 5mm; font-size: 9.5pt; }
+.document-letter-details th { width: 34%; }
+.document-enrollment-date { font-size: 9.5pt; }
+.document-print-signoff { margin-top: 12mm; break-inside: avoid; page-break-inside: avoid; }
+.document-print-signoff > p { margin: 0 0 2mm; }
+.document-signature-line { width: 58mm; height: 12mm; margin: 2mm 0 1mm; border-bottom: 1px solid #384B56; }
+.document-student-sheet h2 { orphans: 3; widows: 3; break-after: avoid; page-break-after: avoid; }
+.document-student-sheet p { orphans: 3; widows: 3; }
+.document-preview-tip { margin: 0; padding: 0 18px 10px; color: #536C78; font-size: .74rem; }
+.document-running-footer { display: flex; justify-content: flex-start; margin-top: auto; padding-top: 4mm; color: #34444D; font-size: 7pt; }
+.document-running-footer p { margin: 0; }
 
 @media (max-width: 760px) {
     .print-preview-document .document-print-page { min-height: calc(141.43vw - 45px); }
@@ -1453,6 +1491,24 @@ img.document-preview-media { width: auto; max-width: 100%; height: auto; max-hei
     @bottom-right { content: "Page " counter(page) " of " counter(pages); font-family: "DejaVu Sans", sans-serif; font-size: 7pt; color: #173247; }
 }
 
+@page student-document-portrait {
+    size: A4 portrait;
+    margin: 16mm;
+    @bottom-center { content: none; }
+    @bottom-left { content: none; }
+    @bottom-right { content: "Page " counter(page) " of " counter(pages); font-family: "DejaVu Sans", sans-serif; font-size: 7pt; color: #173247; }
+}
+
+@page student-document-draft {
+    size: A4 portrait;
+    margin: 16mm;
+    @bottom-center { content: none; }
+    @bottom-left { content: none; }
+    @bottom-right { content: "Page " counter(page) " of " counter(pages); font-family: "DejaVu Sans", sans-serif; font-size: 7pt; color: #173247; }
+}
+
+.document-print-page.document-student-sheet { page: student-document-portrait; }
+.document-print-page.document-student-sheet.is-draft { page: student-document-draft; }
 .report-preview-page { page: report-portrait; }
 .report-preview-page.print-landscape, .document-print-page.print-landscape { page: report-landscape; }
 
@@ -1496,6 +1552,33 @@ img.document-preview-media { width: auto; max-width: 100%; height: auto; max-hei
     .document-print-table th { color: #173247; }
     .document-print-signoff { margin-top: 14mm; break-inside: avoid; page-break-inside: avoid; }
     .document-print-signoff p { margin-bottom: 2mm; }
+    .document-student-sheet { display: block; width: auto !important; max-width: none !important; min-height: 0 !important; margin: 0 !important; padding: 0 !important; color: #111111 !important; background: #FFFFFF !important; box-shadow: none !important; font-family: "DejaVu Sans", sans-serif !important; font-size: 9pt !important; }
+    .document-student-sheet, .document-student-sheet * { color: #111111 !important; background-color: transparent !important; box-shadow: none !important; }
+    .document-student-sheet .document-print-header { margin-bottom: 5mm; padding-bottom: 3mm; border-bottom: 1px solid #173247 !important; }
+    .document-student-sheet .document-print-wordmark span { font-size: 14pt; }
+    .document-student-sheet .document-print-wordmark small { font-size: 8pt; }
+    .document-student-sheet .document-print-header h1 { margin-top: 4mm; font-size: 21pt; }
+    .document-student-sheet .document-reference-strip { margin-bottom: 5mm; padding-bottom: 3mm; border-color: #777777 !important; }
+    .document-student-sheet .document-print-section { margin-bottom: 4mm; }
+    .document-student-sheet .document-print-section h2 { font-size: 13pt; }
+    .document-student-sheet .document-print-details { display: grid; grid-template-columns: repeat(2, minmax(0,1fr)); gap: 2mm 7mm; }
+    .document-student-sheet .document-print-details dt, .document-student-sheet .document-reference-strip dt { font-size: 8pt; }
+    .document-student-sheet .document-print-details dd, .document-student-sheet .document-reference-strip dd { font-size: 9.5pt; overflow-wrap: anywhere; }
+    .document-student-sheet .document-print-table { width: 100%; border-collapse: collapse; table-layout: fixed; font-size: 9pt; }
+    .document-student-sheet .document-print-table thead { display: table-header-group; }
+    .document-student-sheet .document-print-table tr { break-inside: avoid; page-break-inside: avoid; }
+    .document-student-sheet .document-print-table th, .document-student-sheet .document-print-table td { padding: 2mm 2.5mm; border-bottom: 1px solid #888888 !important; background: #FFFFFF !important; }
+    .document-student-sheet .document-print-table th { border-top: 1px solid #555555 !important; }
+    .document-student-sheet .document-letter-copy { font-size: 11pt; line-height: 1.55; }
+    .document-student-sheet .document-letter-details { width: 100%; font-size: 9.5pt; }
+    .document-student-sheet .document-letter-details th, .document-student-sheet .document-letter-details td { padding: 2mm 2.5mm; border-bottom: 1px solid #888888 !important; }
+    .document-student-sheet .document-draft-notice { border-left-color: #555555 !important; background: #F0F0F0 !important; }
+    .document-student-sheet .document-print-signoff { margin-top: 10mm; }
+    .document-student-sheet .document-signature-line { border-color: #333333 !important; }
+    .document-student-sheet .document-running-footer { position: fixed; right: 0; bottom: 0; left: 0; z-index: 1; display: block; margin: 0; padding: 0; color: #111111 !important; background: #FFFFFF !important; }
+    .document-student-sheet a, .document-student-sheet a[href] { color: #111111 !important; text-decoration: none !important; }
+    .document-student-sheet a[href]::after { content: none !important; }
+    .document-student-sheet h2, .document-student-sheet p { orphans: 3; widows: 3; }
     .report-summary article { break-inside: avoid; page-break-inside: avoid; box-shadow: none !important; }
 }
 

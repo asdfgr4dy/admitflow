@@ -261,6 +261,7 @@
     if (window.bootstrap?.Modal) {
         const printPreviewModal = document.querySelector('[data-print-preview-modal]');
         if (printPreviewModal) {
+            const studentDocumentPreview = printPreviewModal.dataset.previewKind === 'student';
             const previewFrame = printPreviewModal.querySelector('[data-preview-frame]');
             const previewLoading = printPreviewModal.querySelector('[data-preview-loading]');
             const previewError = printPreviewModal.querySelector('[data-preview-error]');
@@ -271,7 +272,7 @@
             const orientationButtons = [...printPreviewModal.querySelectorAll('[data-preview-orientation]')];
             let previewTimer = 0;
             let previewUrl = '';
-            let orientation = 'landscape';
+            let orientation = studentDocumentPreview ? 'portrait' : 'landscape';
             let previewReady = false;
             let modalOpen = false;
             let opener = null;
@@ -291,7 +292,8 @@
                     if (!previewDocument || previewFrame.contentWindow.location.origin !== window.location.origin) return false;
                     const previewSheet = previewDocument.querySelector('[data-print-preview-sheet]');
                     if (!previewSheet) return false;
-                    previewSheet.classList.toggle('print-landscape', orientation === 'landscape');
+                    if (studentDocumentPreview) previewSheet.classList.remove('print-landscape');
+                    else previewSheet.classList.toggle('print-landscape', orientation === 'landscape');
                     if (pdfOrientationField) pdfOrientationField.value = orientation;
                     return true;
                 } catch {
@@ -314,13 +316,13 @@
             };
 
             const setOrientation = (nextOrientation, persist = true) => {
-                orientation = nextOrientation === 'portrait' ? 'portrait' : 'landscape';
+                orientation = studentDocumentPreview || nextOrientation === 'portrait' ? 'portrait' : 'landscape';
                 orientationButtons.forEach(button => {
                     const selected = button.dataset.previewOrientation === orientation;
                     button.classList.toggle('active', selected);
                     button.setAttribute('aria-pressed', selected ? 'true' : 'false');
                 });
-                if (persist) {
+                if (persist && !studentDocumentPreview) {
                     try { window.sessionStorage.setItem('admitflow-report-orientation', orientation); } catch {}
                 }
                 if (pdfOrientationField) pdfOrientationField.value = orientation;
@@ -335,10 +337,12 @@
                 if (previewReady) applySignatures();
             });
 
-            try {
-                const savedOrientation = window.sessionStorage.getItem('admitflow-report-orientation');
-                if (savedOrientation === 'portrait' || savedOrientation === 'landscape') orientation = savedOrientation;
-            } catch {}
+            if (!studentDocumentPreview) {
+                try {
+                    const savedOrientation = window.sessionStorage.getItem('admitflow-report-orientation');
+                    if (savedOrientation === 'portrait' || savedOrientation === 'landscape') orientation = savedOrientation;
+                } catch {}
+            }
             setOrientation(orientation, false);
 
             const loadReportPreview = () => {
@@ -404,11 +408,15 @@
             printPreviewModal.addEventListener('show.bs.modal', event => {
                 modalOpen = true;
                 opener = event.relatedTarget || document.activeElement;
-                try {
-                    const savedOrientation = window.sessionStorage.getItem('admitflow-report-orientation');
-                    setOrientation(savedOrientation === 'portrait' ? 'portrait' : 'landscape', false);
-                } catch {
-                    setOrientation('landscape', false);
+                if (studentDocumentPreview) {
+                    setOrientation('portrait', false);
+                } else {
+                    try {
+                        const savedOrientation = window.sessionStorage.getItem('admitflow-report-orientation');
+                        setOrientation(savedOrientation === 'portrait' ? 'portrait' : 'landscape', false);
+                    } catch {
+                        setOrientation('landscape', false);
+                    }
                 }
             });
             printPreviewModal.addEventListener('shown.bs.modal', loadReportPreview);

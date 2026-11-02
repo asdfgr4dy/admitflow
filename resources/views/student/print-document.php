@@ -34,5 +34,6 @@ $dateLabel = static fn (?string $date): string => $date === null || $date === ''
     <?php endif; ?>
 </section>
 <?php if (!$isPrintPreview && $available): ?>
+    <?php $studentDocumentPreviewModal = true; ?>
     <?php require dirname(__DIR__) . '/partials/print-preview-modal.php'; ?>
 <?php endif; ?>

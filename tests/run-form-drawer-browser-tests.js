@@ -391,6 +391,77 @@ const { chromium } = require('playwright');
         console.log('Iframe print PDF point sizes: ' + JSON.stringify({ initialLandscapeSize, selectedPortraitSize, switchedLandscapeSize, switchedPortraitSize, reopenedPortraitSize }));
         await orientationPage.close();
 
+        const studentPage = await browser.newPage({ viewport: { width: 1400, height: 1100 } });
+        const studentSheets = {
+            summary: '<section class="document-print-page document-student-sheet" data-print-preview-sheet data-document-reference="AF-STUDENT-SUMMARY"><header class="document-print-header"><div class="document-print-wordmark"><span>AdmitFlow</span><small>Admission Office</small></div><h1>Application summary</h1></header><dl class="document-reference-strip"><div><dt>Application reference</dt><dd>AF-STUDENT-SUMMARY</dd></div><div><dt>Date generated</dt><dd>November 2, 2026 10:00 AM Asia/Manila</dd></div></dl><section class="document-print-section"><h2>Applicant information</h2><dl class="document-print-details"><div><dt>Applicant name</dt><dd>Student Fixture</dd></div><div><dt>Email</dt><dd>student@example.test</dd></div><div><dt>Mobile number</dt><dd>09171234567</dd></div><div><dt>Residential address</dt><dd>10 Test Road</dd></div></dl></section><section class="document-print-section"><h2>Academic and application details</h2><dl class="document-print-details"><div><dt>Program</dt><dd>Fixture Program</dd></div><div><dt>Academic year or intake</dt><dd>Configured Intake</dd></div></dl></section><section class="document-print-section"><h2>Required documents</h2><table class="document-print-table"><thead><tr><th>Document</th><th>Review status</th><th>Uploaded</th></tr></thead><tbody><tr><td>Transcript</td><td>Verified</td><td>November 1, 2026</td></tr></tbody></table></section><footer class="document-running-footer">AdmitFlow · Admission Office · AF-STUDENT-SUMMARY</footer></section>',
+            acceptance: '<section class="document-print-page document-student-sheet" data-print-preview-sheet data-document-reference="AF-STUDENT-ACCEPT"><header class="document-print-header"><div class="document-print-wordmark"><span>AdmitFlow</span><small>Admission Office</small></div><h1>Acceptance letter</h1></header><dl class="document-reference-strip"><div><dt>Application reference</dt><dd>AF-STUDENT-ACCEPT</dd></div><div><dt>Date generated</dt><dd>November 2, 2026</dd></div><div><dt>Date of decision</dt><dd>October 15, 2026</dd></div></dl><section class="document-letter-copy"><p class="document-letter-date">October 15, 2026</p><p class="document-letter-salutation">Dear Student Fixture,</p><p class="document-letter-subject"><strong>Subject: Acceptance to Fixture Program, Configured Intake</strong></p><p>We are pleased to confirm that your application has been accepted.</p><table class="document-letter-details"><tbody><tr><th>Reference</th><td>AF-STUDENT-ACCEPT</td></tr><tr><th>Program</th><td>Fixture Program</td></tr><tr><th>Academic year</th><td>Configured Intake</td></tr></tbody></table><div class="document-print-signoff"><p>Sincerely,</p><div class="document-signature-line"></div><p>Admission Office, AdmitFlow</p></div></section><footer class="document-running-footer">AdmitFlow · Admission Office · AF-STUDENT-ACCEPT</footer></section>',
+            enrollment: '<section class="document-print-page document-student-sheet" data-print-preview-sheet data-document-reference="AF-STUDENT-ENROLL"><header class="document-print-header"><div class="document-print-wordmark"><span>AdmitFlow</span><small>Admission Office</small></div><h1>Enrollment confirmation</h1></header><dl class="document-reference-strip"><div><dt>Application reference</dt><dd>AF-STUDENT-ENROLL</dd></div><div><dt>Date generated</dt><dd>November 2, 2026</dd></div></dl><section class="document-letter-copy"><p class="document-letter-date">October 20, 2026</p><p class="document-letter-salutation">Dear Student Fixture,</p><p class="document-letter-subject"><strong>Subject: Enrollment confirmation</strong></p><p>This confirms that enrollment for the application below is recorded as complete.</p><table class="document-letter-details"><tbody><tr><th>Reference</th><td>AF-STUDENT-ENROLL</td></tr><tr><th>Program</th><td>Fixture Program</td></tr><tr><th>Academic year</th><td>Configured Intake</td></tr></tbody></table><div class="document-print-signoff"><p>Sincerely,</p><div class="document-signature-line"></div><p>Admission Office, AdmitFlow</p></div></section><footer class="document-running-footer">AdmitFlow · Admission Office · AF-STUDENT-ENROLL</footer></section>'
+        };
+        const studentHarness = '<!doctype html><html lang="en"><head><meta charset="utf-8"><link rel="stylesheet" href="/assets/css/app.css"><script>window.bootstrap={Modal:function(){}};</script><script src="/assets/js/app.js" defer></script></head><body><button id="student-trigger" data-preview-url="/student-document-fixture?type=summary"></button><div data-print-preview-modal data-preview-kind="student"><button data-preview-print disabled>Print</button><div data-preview-loading></div><div data-preview-error hidden></div><iframe data-preview-frame width="1100" height="1000" hidden></iframe></div></body></html>';
+        await studentPage.route('http://127.0.0.1:8000/student-document-fixture**', route => {
+            const type = new URL(route.request().url()).searchParams.get('type') || 'summary';
+            route.fulfill({ status: 200, contentType: 'text/html', body: '<!doctype html><html><head><meta charset="utf-8"><link rel="stylesheet" href="/assets/css/app.css"></head><body class="print-preview-document">' + studentSheets[type] + '</body></html>' });
+        });
+        await studentPage.route('http://127.0.0.1:8000/student-harness', route => route.fulfill({ status: 200, contentType: 'text/html', body: studentHarness }));
+        await studentPage.goto('http://127.0.0.1:8000/student-harness');
+        await studentPage.evaluate(() => sessionStorage.setItem('admitflow-report-orientation', 'landscape'));
+        const studentResults = {};
+        for (const [type, markup] of Object.entries(studentSheets)) {
+            await studentPage.locator('#student-trigger').evaluate((button, documentType) => { button.dataset.previewUrl = '/student-document-fixture?type=' + documentType; }, type);
+            await studentPage.locator('[data-print-preview-modal]').evaluate(modal => {
+                const event = new Event('show.bs.modal');
+                Object.defineProperty(event, 'relatedTarget', { value: document.querySelector('#student-trigger') });
+                modal.dispatchEvent(event);
+                modal.dispatchEvent(new Event('shown.bs.modal'));
+            });
+            const iframe = studentPage.locator('iframe[data-preview-frame]');
+            await studentPage.frameLocator('iframe[data-preview-frame]').locator('[data-print-preview-sheet]').waitFor();
+            await studentPage.waitForFunction(() => !document.querySelector('[data-preview-print]').disabled);
+            const layout = await iframe.evaluate(frame => {
+                const sheet = frame.contentDocument.querySelector('[data-print-preview-sheet]');
+                const rect = sheet.getBoundingClientRect();
+                const visibleBlocks = [...sheet.querySelectorAll(':scope > .document-reference-strip, :scope > .document-print-section, :scope > .document-letter-copy, :scope > .document-running-footer')].map(element => element.getBoundingClientRect()).filter(item => item.width > 0 && item.height > 0);
+                const overlaps = visibleBlocks.some((item, index) => visibleBlocks.slice(index + 1).some(next => item.left < next.right && item.right > next.left && item.top < next.bottom && item.bottom > next.top));
+                const footer = sheet.querySelector('.document-running-footer');
+                const footerRect = footer.getBoundingClientRect();
+                return { width: rect.width, height: rect.height, page: getComputedStyle(sheet).page, classes: sheet.className, overlaps, footer: footer.textContent.trim(), footerDisplay: getComputedStyle(footer).display, footerTop: footerRect.top, footerBottom: footerRect.bottom, sheetTop: rect.top, sheetBottom: rect.bottom, footerBottomGap: rect.bottom - footerRect.bottom, orientationButtons: frame.contentDocument.querySelectorAll('[data-preview-orientation]').length };
+            });
+            assert.ok(Math.abs(layout.width - 793.7) < 8, type + ' student preview has A4 portrait width: ' + JSON.stringify(layout));
+            assert.equal(layout.page, 'student-document-portrait');
+            assert.doesNotMatch(layout.classes, /print-landscape/);
+            assert.equal(layout.overlaps, false);
+            assert.equal(layout.orientationButtons, 0);
+            assert.ok(layout.footerTop >= layout.sheetTop && layout.footerBottom <= layout.sheetBottom + 1, type + ' footer is visible within sheet: ' + JSON.stringify(layout));
+            assert.ok(layout.footerBottomGap < 70, type + ' footer sits at the bottom of the A4 preview sheet content area: ' + JSON.stringify(layout));
+            const expectedReference = markup.match(/AF-STUDENT-[A-Z]+/)[0];
+            assert.ok(layout.footer.includes(expectedReference));
+            const html = await iframe.evaluate(frame => frame.contentDocument.documentElement.outerHTML);
+            if (type === 'summary') {
+                const comparisonDir = path.join(os.tmpdir(), 'admitflow-report-print-comparison');
+                fs.writeFileSync(path.join(comparisonDir, 'student-summary-preview.png'), await studentPage.frameLocator('iframe[data-preview-frame]').locator('[data-print-preview-sheet]').screenshot());
+            }
+            const pdfPage = await browser.newPage();
+            await pdfPage.route('http://127.0.0.1:8000/student-pdf-harness', route => route.fulfill({ status: 200, contentType: 'text/html', body: '<!doctype html><html><head><meta charset="utf-8"></head><body></body></html>' }));
+            await pdfPage.goto('http://127.0.0.1:8000/student-pdf-harness');
+            await pdfPage.evaluate(source => { document.open(); document.write(source); document.close(); }, html);
+            await pdfPage.emulateMedia({ media: 'print' });
+            const pdfBytes = await pdfPage.pdf({ preferCSSPageSize: true, printBackground: true });
+            const box = pdfBytes.toString('latin1').match(/\/MediaBox\s*\[([^\]]+)\]/)?.[1] || '';
+            const pageSize = box.split(/\s+/).slice(-2).map(Number);
+            const pageCount = (pdfBytes.toString('latin1').match(/\/Type\s+\/Page\b/g) || []).length;
+            assert.ok(pageSize[1] > pageSize[0] && Math.abs(pageSize[0] - 595.28) < 2 && Math.abs(pageSize[1] - 841.89) < 2);
+            if (type === 'summary') {
+                assert.equal(pageCount, 1, 'normal student summary should fit one A4 page');
+                fs.writeFileSync(path.join(os.tmpdir(), 'admitflow-report-print-comparison', 'student-summary-save-as-pdf.pdf'), pdfBytes);
+            }
+            studentResults[type] = { sheet: [layout.width, layout.height], pdf: pageSize, pages: pageCount, page: layout.page };
+            await pdfPage.close();
+            await studentPage.locator('[data-print-preview-modal]').evaluate(modal => modal.dispatchEvent(new Event('hidden.bs.modal')));
+        }
+        assert.equal(await studentPage.evaluate(() => sessionStorage.getItem('admitflow-report-orientation')), 'landscape');
+        console.log('Student document A4 preview/PDF sizes: ' + JSON.stringify(studentResults));
+        await studentPage.close();
+
         console.log('Report screen/print comparison: ' + JSON.stringify([landscapeReport, portraitReport].map(result => ({ orientation: result.landscape ? 'landscape' : 'portrait', mediaBox: result.mediaBox, font: result.printLayout.font, size: result.printLayout.size, border: result.printLayout.borderColor, padding: result.printLayout.cellPadding, tableFits: result.printLayout.fits, headersDoNotOverlap: result.printLayout.headersDoNotOverlap }))));
         console.log('Shared drawer, academic dropdown, and report print browser tests: ' + assertionCount + ' assertions, 0 failures.');
     } finally {
