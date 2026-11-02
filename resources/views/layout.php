@@ -43,8 +43,16 @@ if ($signedInUser !== null) {
             ['label' => 'Applications', 'href' => '/admin/applications', 'icon' => 'bi-folder2-open'],
             ['label' => 'Reports', 'href' => '/staff/reports', 'icon' => 'bi-bar-chart-line'],
             ['label' => 'Announcement Center', 'href' => '/staff/announcements', 'icon' => 'bi-megaphone'],
-            ['label' => 'User administration', 'href' => '/staff/users', 'icon' => 'bi-people'],
-            ['label' => 'Academic settings', 'href' => '/staff/settings', 'icon' => 'bi-sliders'],
+            ['label' => 'User Administration', 'icon' => 'bi-people', 'group' => 'user-administration', 'children' => [
+                ['label' => 'Administrator Accounts', 'href' => '/staff/users/administrators'],
+                ['label' => 'Staff Accounts', 'href' => '/staff/users/staff'],
+                ['label' => 'Student Accounts', 'href' => '/staff/users/students'],
+            ]],
+            ['label' => 'Academic Settings', 'icon' => 'bi-sliders', 'group' => 'academic-settings', 'children' => [
+                ['label' => 'Programs', 'href' => '/staff/academic/programs'],
+                ['label' => 'Academic Years', 'href' => '/staff/academic/years'],
+                ['label' => 'Requirements', 'href' => '/staff/academic/requirements'],
+            ]],
             ['label' => 'Audit log', 'href' => '/staff/audit', 'icon' => 'bi-journal-text'],
             ['label' => 'Backups & restore', 'href' => '/staff/backups', 'icon' => 'bi-archive'],
             ['label' => 'Settings', 'href' => '/settings', 'icon' => 'bi-gear'],
@@ -85,8 +93,8 @@ if ($signedInUser !== null) {
             <nav class="app-sidebar-nav" aria-label="Workspace">
                 <?php foreach ($portalLinks as $link): ?>
                     <?php
-                    $linkPath = parse_url($link['href'], PHP_URL_PATH) ?: '/';
-                    $isActive = !str_contains($link['href'], '#') && $currentPath === $linkPath;
+                    $linkPath = isset($link['href']) ? (parse_url($link['href'], PHP_URL_PATH) ?: '/') : '';
+                    $isActive = isset($link['href']) && !str_contains($link['href'], '#') && $currentPath === $linkPath;
                     if ($link['label'] === 'Settings' && (str_starts_with($currentPath, '/settings') || $currentPath === '/account/password')) {
                         $isActive = true;
                     }
@@ -94,9 +102,25 @@ if ($signedInUser !== null) {
                         $isActive = true;
                     }
                     ?>
+                    <?php if (isset($link['children'])): ?>
+                        <?php $isGroupActive = $link['group'] === 'user-administration' ? str_starts_with($currentPath, '/staff/users/') : str_starts_with($currentPath, '/staff/academic/'); ?>
+                        <section class="app-sidebar-group" data-sidebar-group="<?= e($link['group']) ?>" data-active-group="<?= $isGroupActive ? 'true' : 'false' ?>">
+                            <button class="app-sidebar-group-toggle<?= $isGroupActive ? ' is-active' : '' ?>" type="button" aria-expanded="<?= $isGroupActive ? 'true' : 'false' ?>" aria-controls="sidebar-group-<?= e($link['group']) ?>" data-sidebar-group-toggle>
+                                <i class="bi <?= e($link['icon']) ?>" aria-hidden="true"></i><span><?= e($link['label']) ?></span><i class="bi bi-chevron-down app-sidebar-group-chevron" aria-hidden="true"></i>
+                            </button>
+                            <div class="app-sidebar-subnav" id="sidebar-group-<?= e($link['group']) ?>" <?= $isGroupActive ? '' : 'hidden' ?>>
+                                <?php foreach ($link['children'] as $child): ?>
+                                    <?php $childPath = parse_url($child['href'], PHP_URL_PATH) ?: '/'; ?>
+                                    <?php $childIsActive = $currentPath === $childPath; ?>
+                                    <a class="app-sidebar-sublink<?= $childIsActive ? ' is-active' : '' ?>" href="<?= e($child['href']) ?>" <?= $childIsActive ? 'aria-current="page"' : '' ?> data-sidebar-child="<?= e($childPath) ?>"><?= e($child['label']) ?></a>
+                                <?php endforeach; ?>
+                            </div>
+                        </section>
+                    <?php else: ?>
                     <a class="app-sidebar-link<?= $isActive ? ' is-active' : '' ?>" href="<?= e($link['href']) ?>" <?= $isActive ? 'aria-current="page"' : '' ?> data-sidebar-current="<?= $isActive ? 'true' : 'false' ?>" data-sidebar-link="<?= e($link['label']) ?>">
                         <i class="bi <?= e($link['icon']) ?>" aria-hidden="true"></i><span><?= e($link['label']) ?></span>
                     </a>
+                    <?php endif; ?>
                 <?php endforeach; ?>
             </nav>
             <div class="app-sidebar-bottom">

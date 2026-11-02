@@ -177,10 +177,13 @@ final class StaffService
         ];
     }
 
-    public static function academicSettings(PDO $database, array $user, array $input = []): array
+    public static function academicSettings(PDO $database, array $user, array $input = [], ?string $scope = null): array
     {
         if (($user['role'] ?? '') !== 'admin') {
             throw new DomainException('Administrator access is required to view academic settings.');
+        }
+        if ($scope !== null && !in_array($scope, ['programs', 'years', 'requirements'], true)) {
+            throw new DomainException('Choose a valid academic settings page.');
         }
         $filters = [
             'program_q' => trim((string) ($input['program_q'] ?? '')),
@@ -192,10 +195,23 @@ final class StaffService
             'required' => trim((string) ($input['required'] ?? '')),
             'requirement_program' => trim((string) ($input['requirement_program'] ?? '')),
             'requirement_year' => trim((string) ($input['requirement_year'] ?? '')),
+            'sort' => trim((string) ($input['sort'] ?? '')),
+            'direction' => strtolower(trim((string) ($input['direction'] ?? ($scope === 'years' ? 'desc' : 'asc')))),
         ];
+        if ($scope !== null) {
+            $scopeFilters = match ($scope) {
+                'programs' => ['program_q', 'program_state', 'sort', 'direction'],
+                'years' => ['year_q', 'year_state', 'sort', 'direction'],
+                'requirements' => ['requirement_q', 'requirement_state', 'required', 'requirement_program', 'requirement_year', 'sort', 'direction'],
+            };
+            foreach (array_keys($filters) as $filterKey) {
+                if (!in_array($filterKey, $scopeFilters, true)) $filters[$filterKey] = '';
+            }
+        }
         foreach (['program_q', 'year_q', 'requirement_q'] as $key) {
             if (mb_strlen($filters[$key]) > 160) throw new DomainException('Keep academic settings search under 160 characters.');
         }
+        if (!in_array($filters['direction'], ['asc', 'desc'], true)) $filters['direction'] = 'asc';
         if (!in_array($filters['program_state'], ['', 'active', 'inactive'], true) || !in_array($filters['year_state'], ['', 'open', 'closed'], true) || !in_array($filters['requirement_state'], ['', 'active', 'inactive'], true) || !in_array($filters['required'], ['', 'required', 'optional'], true)) {
             throw new DomainException('Choose a valid academic settings filter.');
         }
@@ -208,32 +224,67 @@ final class StaffService
             }
         }
 
-        $programWhere = ['1 = 1'];
-        $programParameters = [];
-        if ($filters['program_q'] !== '') {
-            $programWhere[] = '(code LIKE :code OR name LIKE :name)';
-            $programParameters['code'] = '%' . $filters['program_q'] . '%';
-            $programParameters['name'] = '%' . $filters['program_q'] . '%';
+        $programRows = [];
+        $yearRows = [];
+        $requirementRows = [];
+        $programOptions = [];
+        $yearOptions = [];
+        $totalRecordCount = 0;
+        $pagination = Pagination::make(0, $input, 'page', 'per_page', 20);
+        $sortKeys = [
+            'programs' => ['name' => 'p.name', 'applications' => 'application_count', 'status' => 'p.is_active', 'updated' => 'p.updated_at'],
+            'years' => ['label' => 'y.label', 'start' => 'y.starts_on', 'end' => 'y.ends_on', 'applications' => 'application_count', 'status' => 'y.is_open', 'current' => 'y.is_open', 'updated' => 'y.updated_at'],
+            'requirements' => ['name' => 'r.name', 'type' => 'r.is_required', 'program' => 'program_name', 'year' => 'year_label', 'status' => 'r.is_active', 'updated' => 'r.updated_at'],
+        ];
+        $sortKey = $filters['sort'];
+        if (!isset($sortKeys[$scope ?? 'programs'][$sortKey])) $sortKey = match ($scope) { 'years' => 'start', 'requirements' => 'name', default => 'name' };
+        $sortExpression = $sortKeys[$scope ?? 'programs'][$sortKey];
+        $sortDirection = strtoupper($filters['direction']);
+        $pageInput = ['page' => $input['page'] ?? 1, 'per_page' => $input['per_page'] ?? 20];
+        if ($scope === null || $scope === 'programs') {
+            $programWhere = ['1 = 1'];
+            $programParameters = [];
+            if ($filters['program_q'] !== '') {
+                $programWhere[] = '(p.code LIKE :code OR p.name LIKE :name)';
+                $programParameters['code'] = '%' . $filters['program_q'] . '%';
+                $programParameters['name'] = '%' . $filters['program_q'] . '%';
+            }
+            if ($filters['program_state'] !== '') {
+                $programWhere[] = 'p.is_active = :active';
+                $programParameters['active'] = $filters['program_state'] === 'active' ? 1 : 0;
+            }
+            $programWhereSql = implode(' AND ', $programWhere);
+            $programCount = $database->prepare('SELECT COUNT(*) FROM academic_programs p WHERE ' . $programWhereSql);
+            $programCount->execute($programParameters);
+            $pagination = Pagination::make((int) $programCount->fetchColumn(), $pageInput, 'page', 'per_page', 20);
+            $totalRecordCount = (int) $database->query('SELECT COUNT(*) FROM academic_programs')->fetchColumn();
+            $programOrderBy = ($scope === null ? 'p.name ASC' : $sortExpression . ' ' . $sortDirection) . ', p.id DESC';
+            $programQuery = $database->prepare('SELECT p.id, p.code, p.name, p.description, p.is_active, p.created_at, p.updated_at, (SELECT COUNT(*) FROM applications a WHERE a.academic_program_id = p.id AND a.deleted_at IS NULL) AS application_count FROM academic_programs p WHERE ' . $programWhereSql . ' ORDER BY ' . $programOrderBy . ' LIMIT ' . $pagination['page_size'] . ' OFFSET ' . $pagination['offset']);
+            $programQuery->execute($programParameters);
+            $programRows = $programQuery->fetchAll();
         }
-        if ($filters['program_state'] !== '') {
-            $programWhere[] = 'is_active = :active';
-            $programParameters['active'] = $filters['program_state'] === 'active' ? 1 : 0;
-        }
-        $programs = $database->prepare('SELECT id, code, name, is_active FROM academic_programs WHERE ' . implode(' AND ', $programWhere) . ' ORDER BY name');
-        $programs->execute($programParameters);
 
-        $yearWhere = ['1 = 1'];
-        $yearParameters = [];
-        if ($filters['year_q'] !== '') {
-            $yearWhere[] = 'label LIKE :label';
-            $yearParameters['label'] = '%' . $filters['year_q'] . '%';
+        if ($scope === null || $scope === 'years') {
+            $yearWhere = ['1 = 1'];
+            $yearParameters = [];
+            if ($filters['year_q'] !== '') {
+                $yearWhere[] = 'y.label LIKE :label';
+                $yearParameters['label'] = '%' . $filters['year_q'] . '%';
+            }
+            if ($filters['year_state'] !== '') {
+                $yearWhere[] = 'y.is_open = :is_open';
+                $yearParameters['is_open'] = $filters['year_state'] === 'open' ? 1 : 0;
+            }
+            $yearWhereSql = implode(' AND ', $yearWhere);
+            $yearCount = $database->prepare('SELECT COUNT(*) FROM academic_years y WHERE ' . $yearWhereSql);
+            $yearCount->execute($yearParameters);
+            $pagination = Pagination::make((int) $yearCount->fetchColumn(), $pageInput, 'page', 'per_page', 20);
+            $totalRecordCount = (int) $database->query('SELECT COUNT(*) FROM academic_years')->fetchColumn();
+            $yearOrderBy = $scope === null ? 'y.starts_on DESC, y.id DESC' : $sortExpression . ' ' . $sortDirection . ', y.id DESC';
+            $yearQuery = $database->prepare('SELECT y.id, y.label, y.starts_on, y.ends_on, y.application_deadline, y.is_open, y.created_at, y.updated_at, (SELECT COUNT(*) FROM applications a WHERE a.academic_year_id = y.id AND a.deleted_at IS NULL) AS application_count FROM academic_years y WHERE ' . $yearWhereSql . ' ORDER BY ' . $yearOrderBy . ' LIMIT ' . $pagination['page_size'] . ' OFFSET ' . $pagination['offset']);
+            $yearQuery->execute($yearParameters);
+            $yearRows = $yearQuery->fetchAll();
         }
-        if ($filters['year_state'] !== '') {
-            $yearWhere[] = 'is_open = :is_open';
-            $yearParameters['is_open'] = $filters['year_state'] === 'open' ? 1 : 0;
-        }
-        $years = $database->prepare('SELECT id, label, starts_on, ends_on, application_deadline, is_open FROM academic_years WHERE ' . implode(' AND ', $yearWhere) . ' ORDER BY starts_on DESC');
-        $years->execute($yearParameters);
 
         $requirementWhere = ['1 = 1'];
         $requirementParameters = [];
@@ -258,16 +309,32 @@ final class StaffService
             $requirementWhere[] = '(r.academic_year_id IS NULL OR r.academic_year_id = :scope_year)';
             $requirementParameters['scope_year'] = (int) $filters['requirement_year'];
         }
-        $requirements = $database->prepare('SELECT r.id, r.code, r.name, r.instructions, r.academic_program_id, r.academic_year_id, r.allowed_extensions, r.max_file_size_bytes, r.is_required, r.is_active FROM admission_requirements r WHERE ' . implode(' AND ', $requirementWhere) . ' ORDER BY r.sort_order, r.name');
-        $requirements->execute($requirementParameters);
+        if ($scope === null || $scope === 'requirements') {
+            $requirementWhereSql = implode(' AND ', $requirementWhere);
+            $requirementWhereSql = str_replace(['r.code', 'r.name', 'r.is_active', 'r.is_required'], ['r.code', 'r.name', 'r.is_active', 'r.is_required'], $requirementWhereSql);
+            $requirementCount = $database->prepare('SELECT COUNT(*) FROM admission_requirements r LEFT JOIN academic_programs p ON p.id = r.academic_program_id LEFT JOIN academic_years y ON y.id = r.academic_year_id WHERE ' . $requirementWhereSql);
+            $requirementCount->execute($requirementParameters);
+            $pagination = Pagination::make((int) $requirementCount->fetchColumn(), $pageInput, 'page', 'per_page', 20);
+            $totalRecordCount = (int) $database->query('SELECT COUNT(*) FROM admission_requirements')->fetchColumn();
+            $requirementOrderBy = $scope === null ? 'r.sort_order, r.name' : $sortExpression . ' ' . $sortDirection . ', r.sort_order, r.id DESC';
+            $requirements = $database->prepare('SELECT r.id, r.code, r.name, r.instructions, r.academic_program_id, r.academic_year_id, r.allowed_extensions, r.max_file_size_bytes, r.is_required, r.is_active, r.created_at, r.updated_at, p.name AS program_name, y.label AS year_label, (SELECT COUNT(*) FROM application_documents d WHERE d.requirement_id = r.id) AS submitted_document_count FROM admission_requirements r LEFT JOIN academic_programs p ON p.id = r.academic_program_id LEFT JOIN academic_years y ON y.id = r.academic_year_id WHERE ' . $requirementWhereSql . ' ORDER BY ' . $requirementOrderBy . ' LIMIT ' . $pagination['page_size'] . ' OFFSET ' . $pagination['offset']);
+            $requirements->execute($requirementParameters);
+            $requirementRows = $requirements->fetchAll();
+            $programOptions = $database->query('SELECT id, code, name, is_active FROM academic_programs ORDER BY name')->fetchAll();
+            $yearOptions = $database->query('SELECT id, label, is_open FROM academic_years ORDER BY starts_on DESC')->fetchAll();
+        }
 
         return [
-            'programs' => $programs->fetchAll(),
-            'years' => $years->fetchAll(),
-            'requirements' => $requirements->fetchAll(),
-            'programOptions' => $database->query('SELECT id, code, name FROM academic_programs ORDER BY name')->fetchAll(),
-            'yearOptions' => $database->query('SELECT id, label FROM academic_years ORDER BY starts_on DESC')->fetchAll(),
+            'programs' => $programRows,
+            'years' => $yearRows,
+            'requirements' => $requirementRows,
+            'programOptions' => $programOptions,
+            'yearOptions' => $yearOptions,
             'filters' => $filters,
+            'pagination' => $pagination,
+            'totalRecordCount' => $totalRecordCount,
+            'sort' => $sortKey,
+            'direction' => strtolower($sortDirection),
         ];
     }
 
@@ -309,6 +376,23 @@ final class StaffService
                     }
                 }
             }
+        }
+        $datePreset = trim((string) ($input['date_range'] ?? ''));
+        if ($datePreset !== '' && !in_array($datePreset, ['last7', 'last30', 'term', 'custom'], true)) {
+            throw new DomainException('Choose a valid report date range.');
+        }
+        $manila = new DateTimeZone('Asia/Manila');
+        if ($datePreset === 'last7' || $datePreset === 'last30') {
+            $today = new DateTimeImmutable('today', $manila);
+            $input['start_date'] = $today->sub(new DateInterval($datePreset === 'last7' ? 'P6D' : 'P29D'))->format('Y-m-d');
+            $input['end_date'] = $today->format('Y-m-d');
+        } elseif ($datePreset === 'term') {
+            $term = $database->query('SELECT starts_on, ends_on FROM academic_years WHERE is_open = 1 ORDER BY starts_on DESC, id DESC LIMIT 1')->fetch();
+            if (!is_array($term) || empty($term['starts_on']) || empty($term['ends_on'])) {
+                throw new DomainException('This Term is unavailable because no open academic year has both configured date boundaries.');
+            }
+            $input['start_date'] = (string) $term['starts_on'];
+            $input['end_date'] = (string) $term['ends_on'];
         }
         $dateFilters = [];
         foreach (['start_date' => 'start', 'end_date' => 'end'] as $key => $boundary) {
@@ -355,21 +439,61 @@ final class StaffService
         }
 
         $whereSql = implode(' AND ', $where);
-        $joins = ' FROM applications a JOIN users u ON u.id = a.student_id LEFT JOIN academic_programs p ON p.id = a.academic_program_id LEFT JOIN academic_years y ON y.id = a.academic_year_id LEFT JOIN (SELECT assignment.application_id, assignment.reviewer_id FROM reviewer_assignments assignment JOIN (SELECT application_id, MAX(id) AS id FROM reviewer_assignments WHERE unassigned_at IS NULL GROUP BY application_id) latest ON latest.id = assignment.id) active_assignment ON active_assignment.application_id = a.id LEFT JOIN users reviewer ON reviewer.id = active_assignment.reviewer_id ';
+        $joins = ' FROM applications a JOIN users u ON u.id = a.student_id LEFT JOIN academic_programs p ON p.id = a.academic_program_id LEFT JOIN academic_years y ON y.id = a.academic_year_id LEFT JOIN (SELECT assignment.application_id, assignment.reviewer_id FROM reviewer_assignments assignment JOIN (SELECT application_id, MAX(id) AS id FROM reviewer_assignments WHERE unassigned_at IS NULL GROUP BY application_id) latest ON latest.id = assignment.id) active_assignment ON active_assignment.application_id = a.id LEFT JOIN users reviewer ON reviewer.id = active_assignment.reviewer_id AND reviewer.role = \'reviewer\' AND reviewer.account_status = \'active\' LEFT JOIN (SELECT application_id, MIN(id) AS id FROM application_status_history WHERE to_status = \'in_screening\' GROUP BY application_id) first_review_history ON first_review_history.application_id = a.id LEFT JOIN application_status_history first_review_event ON first_review_event.id = first_review_history.id LEFT JOIN users historical_reviewer ON historical_reviewer.id = first_review_event.changed_by AND historical_reviewer.role = \'reviewer\' ';
         $countQuery = $database->prepare('SELECT COUNT(*)' . $joins . 'WHERE ' . $whereSql);
         $countQuery->execute($parameters);
-        $total = (int) $countQuery->fetchColumn();
-        $pagination = Pagination::make($total, $input, 'page', 'per_page', 20);
+        $totalApplications = (int) $countQuery->fetchColumn();
+        $rowWhere = $where;
+        $rowParameters = $parameters;
+        $drilldown = trim((string) ($input['drilldown'] ?? ''));
+        $drilldownConditions = [
+            'stage:submitted' => 'a.submitted_at IS NOT NULL',
+            'stage:screening' => '(a.status IN (\'in_screening\', \'interview_scheduled\', \'accepted\', \'enrolled\') OR EXISTS (SELECT 1 FROM application_status_history h WHERE h.application_id = a.id AND h.to_status IN (\'in_screening\', \'interview_scheduled\', \'accepted\', \'enrolled\')))',
+            'stage:interview' => '(a.status IN (\'interview_scheduled\', \'accepted\', \'enrolled\') OR EXISTS (SELECT 1 FROM application_status_history h WHERE h.application_id = a.id AND h.to_status IN (\'interview_scheduled\', \'accepted\', \'enrolled\')))',
+            'stage:accepted' => '(a.status IN (\'accepted\', \'enrolled\') OR EXISTS (SELECT 1 FROM application_status_history h WHERE h.application_id = a.id AND h.to_status IN (\'accepted\', \'enrolled\')))',
+            'stage:enrolled' => '(a.status = \'enrolled\' OR EXISTS (SELECT 1 FROM application_status_history h WHERE h.application_id = a.id AND h.to_status = \'enrolled\'))',
+            'attention:unassigned' => 'a.status IN (\'submitted\', \'in_screening\', \'documents_incomplete\', \'interview_scheduled\') AND NOT EXISTS (SELECT 1 FROM reviewer_assignments active_review_assignment JOIN users assigned_reviewer ON assigned_reviewer.id = active_review_assignment.reviewer_id AND assigned_reviewer.role = \'reviewer\' AND assigned_reviewer.account_status = \'active\' WHERE active_review_assignment.application_id = a.id AND active_review_assignment.unassigned_at IS NULL)',
+            'attention:incomplete_documents' => 'EXISTS (SELECT 1 FROM admission_requirements r WHERE r.is_active = 1 AND r.is_required = 1 AND (r.academic_program_id IS NULL OR r.academic_program_id = a.academic_program_id) AND (r.academic_year_id IS NULL OR r.academic_year_id = a.academic_year_id) AND NOT EXISTS (SELECT 1 FROM application_documents d WHERE d.application_id = a.id AND d.requirement_id = r.id AND d.is_current = 1 AND d.review_status = \'verified\'))',
+            'status:declined' => 'a.status = \'declined\'',
+            'status:documents_incomplete' => 'a.status = \'documents_incomplete\'',
+        ];
+        $nowManila = new DateTimeImmutable('now', $manila);
+        $weekStart = $nowManila->modify('monday this week')->setTime(0, 0)->setTimezone(new DateTimeZone('UTC'))->format('Y-m-d H:i:s');
+        $weekEnd = (new DateTimeImmutable($weekStart, new DateTimeZone('UTC')))->add(new DateInterval('P7D'))->format('Y-m-d H:i:s');
+        $idleBefore = $nowManila->sub(new DateInterval('P7D'))->setTimezone(new DateTimeZone('UTC'))->format('Y-m-d H:i:s');
+        $drilldownConditions['attention:interviews_week'] = 'EXISTS (SELECT 1 FROM interviews i WHERE i.application_id = a.id AND i.status = \'scheduled\' AND i.starts_at_utc >= :drill_week_start AND i.starts_at_utc < :drill_week_end)';
+        $drilldownConditions['attention:idle'] = 'a.status IN (\'submitted\', \'in_screening\', \'documents_incomplete\', \'interview_scheduled\') AND a.submitted_at < :drill_idle_submission_before AND NOT EXISTS (SELECT 1 FROM application_status_history h WHERE h.application_id = a.id AND h.created_at >= :drill_idle_history_before) AND NOT EXISTS (SELECT 1 FROM screening_notes n WHERE n.application_id = a.id AND n.created_at >= :drill_idle_note_before) AND NOT EXISTS (SELECT 1 FROM interviews i WHERE i.application_id = a.id AND i.updated_at >= :drill_idle_interview_before) AND NOT EXISTS (SELECT 1 FROM application_documents d JOIN document_reviews dr ON dr.document_id = d.id WHERE d.application_id = a.id AND dr.reviewed_at >= :drill_idle_document_before)';
+        if ($drilldown !== '' && !isset($drilldownConditions[$drilldown])) {
+            throw new DomainException('Choose a valid report table filter.');
+        }
+        if (isset($drilldownConditions[$drilldown])) {
+            $rowWhere[] = $drilldownConditions[$drilldown];
+            if ($drilldown === 'attention:interviews_week') $rowParameters += ['drill_week_start' => $weekStart, 'drill_week_end' => $weekEnd];
+            if ($drilldown === 'attention:idle') $rowParameters += ['drill_idle_submission_before' => $idleBefore, 'drill_idle_history_before' => $idleBefore, 'drill_idle_note_before' => $idleBefore, 'drill_idle_interview_before' => $idleBefore, 'drill_idle_document_before' => $idleBefore];
+        }
+        $rowWhereSql = implode(' AND ', $rowWhere);
+        $rowCountQuery = $database->prepare('SELECT COUNT(*)' . $joins . 'WHERE ' . $rowWhereSql);
+        $rowCountQuery->execute($rowParameters);
+        $rowTotal = (int) $rowCountQuery->fetchColumn();
+        $pagination = Pagination::make($rowTotal, $input, 'page', 'per_page', 20);
         if ($allRows && !$paginateAllRows) {
-            $pagination = array_merge($pagination, ['page' => 1, 'page_size' => 5000, 'total_pages' => max(1, (int) ceil($total / 5000)), 'offset' => 0, 'from' => $total === 0 ? 0 : 1, 'to' => min($total, 5000)]);
+            $pagination = array_merge($pagination, ['page' => 1, 'page_size' => 5000, 'total_pages' => max(1, (int) ceil($rowTotal / 5000)), 'offset' => 0, 'from' => $rowTotal === 0 ? 0 : 1, 'to' => min($rowTotal, 5000)]);
             $pageSize = 5000;
         } else {
             $pageSize = $pagination['page_size'];
         }
-        $query = 'SELECT a.id, a.reference_number, a.status, a.submitted_at, u.full_name, p.name AS program_name, y.label AS year_label, (SELECT COUNT(*) FROM application_documents d WHERE d.application_id = a.id AND d.is_current = 1) AS uploaded_documents, (SELECT COUNT(*) FROM admission_requirements r WHERE r.is_active = 1 AND r.is_required = 1 AND (r.academic_program_id IS NULL OR r.academic_program_id = a.academic_program_id) AND (r.academic_year_id IS NULL OR r.academic_year_id = a.academic_year_id)) AS required_documents, reviewer.full_name AS reviewer_name' . $joins . 'WHERE ' . $whereSql . ' ORDER BY a.submitted_at DESC, a.id DESC LIMIT ' . $pageSize . ' OFFSET ' . $pagination['offset'];
+        $sortKey = trim((string) ($input['report_sort'] ?? 'submitted'));
+        $sortDirection = strtolower(trim((string) ($input['report_direction'] ?? 'desc')));
+        $sortColumns = ['submitted' => 'a.submitted_at', 'status' => 'a.status', 'program' => 'p.name'];
+        if (!isset($sortColumns[$sortKey]) || !in_array($sortDirection, ['asc', 'desc'], true)) {
+            $sortKey = 'submitted';
+            $sortDirection = 'desc';
+        }
+        $orderBy = $sortColumns[$sortKey] . ' ' . strtoupper($sortDirection) . ', a.id DESC';
+        $query = 'SELECT a.id, a.reference_number, a.status, a.submitted_at, u.full_name, p.name AS program_name, y.label AS year_label, (SELECT COUNT(*) FROM application_documents d WHERE d.application_id = a.id AND d.is_current = 1) AS uploaded_documents, (SELECT COUNT(*) FROM application_documents d JOIN admission_requirements verified_requirement ON verified_requirement.id = d.requirement_id WHERE d.application_id = a.id AND d.is_current = 1 AND d.review_status = \'verified\' AND verified_requirement.is_active = 1 AND verified_requirement.is_required = 1 AND (verified_requirement.academic_program_id IS NULL OR verified_requirement.academic_program_id = a.academic_program_id) AND (verified_requirement.academic_year_id IS NULL OR verified_requirement.academic_year_id = a.academic_year_id)) AS verified_documents, (SELECT COUNT(*) FROM admission_requirements r WHERE r.is_active = 1 AND r.is_required = 1 AND (r.academic_program_id IS NULL OR r.academic_program_id = a.academic_program_id) AND (r.academic_year_id IS NULL OR r.academic_year_id = a.academic_year_id)) AS required_documents, COALESCE(reviewer.full_name, historical_reviewer.full_name, (SELECT historical_document_reviewer.full_name FROM application_documents historical_document JOIN document_reviews historical_document_review ON historical_document_review.document_id = historical_document.id JOIN users historical_document_reviewer ON historical_document_reviewer.id = historical_document_review.reviewer_id AND historical_document_reviewer.role = \'reviewer\' WHERE historical_document.application_id = a.id ORDER BY historical_document_review.reviewed_at ASC, historical_document_review.id ASC LIMIT 1)) AS reviewer_name, CASE WHEN reviewer.id IS NULL AND (historical_reviewer.id IS NOT NULL OR EXISTS (SELECT 1 FROM application_documents historical_document JOIN document_reviews historical_document_review ON historical_document_review.document_id = historical_document.id JOIN users historical_document_reviewer ON historical_document_reviewer.id = historical_document_review.reviewer_id AND historical_document_reviewer.role = \'reviewer\' WHERE historical_document.application_id = a.id)) THEN 1 ELSE 0 END AS reviewer_is_historical' . $joins . 'WHERE ' . $rowWhereSql . ' ORDER BY ' . $orderBy . ' LIMIT ' . $pageSize . ' OFFSET ' . $pagination['offset'];
         $statement = $database->prepare($query);
-        $statement->execute($parameters);
-        $summary = ['statuses' => [], 'programs' => [], 'years' => [], 'reviewed' => 0, 'average_review_hours' => null, 'documents_uploaded' => 0, 'documents_required' => 0];
+        $statement->execute($rowParameters);
+        $summary = ['statuses' => [], 'programs' => [], 'years' => [], 'reviewed' => 0, 'average_review_hours' => null, 'documents_uploaded' => 0, 'documents_verified' => 0, 'documents_required' => 0];
         if ($allRows) {
             $summaryQuery = $database->prepare('SELECT a.status, COALESCE(p.name, \'Not selected\') AS program_name, COALESCE(y.label, \'Not selected\') AS year_label, COUNT(*) AS total' . $joins . 'WHERE ' . $whereSql . ' GROUP BY a.status, p.name, y.label');
             $summaryQuery->execute($parameters);
@@ -378,21 +502,61 @@ final class StaffService
                 $summary['programs'][$row['program_name']] = ($summary['programs'][$row['program_name']] ?? 0) + (int) $row['total'];
                 $summary['years'][$row['year_label']] = ($summary['years'][$row['year_label']] ?? 0) + (int) $row['total'];
             }
-            $summary['reviewed'] = $total - ($summary['statuses']['submitted'] ?? 0);
-            $documentTotals = $database->prepare('SELECT COALESCE(SUM((SELECT COUNT(*) FROM application_documents d WHERE d.application_id = a.id AND d.is_current = 1)), 0) AS documents_uploaded, COALESCE(SUM((SELECT COUNT(*) FROM admission_requirements r WHERE r.is_active = 1 AND r.is_required = 1 AND (r.academic_program_id IS NULL OR r.academic_program_id = a.academic_program_id) AND (r.academic_year_id IS NULL OR r.academic_year_id = a.academic_year_id))), 0) AS documents_required' . $joins . 'WHERE ' . $whereSql);
+            $reviewedQuery = $database->prepare('SELECT COUNT(DISTINCT a.id)' . $joins . 'WHERE ' . $whereSql . ' AND a.submitted_at IS NOT NULL AND (EXISTS (SELECT 1 FROM application_status_history verified_review WHERE verified_review.application_id = a.id AND verified_review.to_status = \'in_screening\' AND verified_review.created_at >= a.submitted_at) OR EXISTS (SELECT 1 FROM application_documents reviewed_document JOIN document_reviews verified_document_review ON verified_document_review.document_id = reviewed_document.id WHERE reviewed_document.application_id = a.id AND verified_document_review.reviewed_at >= a.submitted_at))');
+            $reviewedQuery->execute($parameters);
+            $summary['reviewed'] = (int) $reviewedQuery->fetchColumn();
+            $documentTotals = $database->prepare('SELECT COALESCE(SUM((SELECT COUNT(*) FROM application_documents d WHERE d.application_id = a.id AND d.is_current = 1)), 0) AS documents_uploaded, COALESCE(SUM((SELECT COUNT(*) FROM application_documents d JOIN admission_requirements verified_requirement ON verified_requirement.id = d.requirement_id WHERE d.application_id = a.id AND d.is_current = 1 AND d.review_status = \'verified\' AND verified_requirement.is_active = 1 AND verified_requirement.is_required = 1 AND (verified_requirement.academic_program_id IS NULL OR verified_requirement.academic_program_id = a.academic_program_id) AND (verified_requirement.academic_year_id IS NULL OR verified_requirement.academic_year_id = a.academic_year_id))), 0) AS documents_verified, COALESCE(SUM((SELECT COUNT(*) FROM admission_requirements r WHERE r.is_active = 1 AND r.is_required = 1 AND (r.academic_program_id IS NULL OR r.academic_program_id = a.academic_program_id) AND (r.academic_year_id IS NULL OR r.academic_year_id = a.academic_year_id))), 0) AS documents_required' . $joins . 'WHERE ' . $whereSql);
             $documentTotals->execute($parameters);
             $documentTotalsRow = $documentTotals->fetch() ?: [];
             $summary['documents_uploaded'] = (int) ($documentTotalsRow['documents_uploaded'] ?? 0);
+            $summary['documents_verified'] = (int) ($documentTotalsRow['documents_verified'] ?? 0);
             $summary['documents_required'] = (int) ($documentTotalsRow['documents_required'] ?? 0);
             $reviewInterval = $database->getAttribute(PDO::ATTR_DRIVER_NAME) === 'sqlite'
                 ? '(julianday(first_review.reviewed_at) - julianday(a.submitted_at)) * 24'
                 : 'TIMESTAMPDIFF(MINUTE, a.submitted_at, first_review.reviewed_at) / 60';
-            $reviewQuery = $database->prepare('SELECT ROUND(AVG(' . $reviewInterval . '), 1)' . $joins . 'JOIN (SELECT application_id, MIN(created_at) AS reviewed_at FROM application_status_history WHERE to_status = \'in_screening\' GROUP BY application_id) first_review ON first_review.application_id = a.id WHERE ' . $whereSql . ' AND a.submitted_at IS NOT NULL');
+            $firstReviewJoin = ' JOIN (SELECT review_events.application_id, MIN(review_events.reviewed_at) AS reviewed_at FROM (SELECT h.application_id, h.created_at AS reviewed_at FROM application_status_history h WHERE h.to_status = \'in_screening\' UNION ALL SELECT d.application_id, dr.reviewed_at FROM document_reviews dr JOIN application_documents d ON d.id = dr.document_id) review_events JOIN applications reviewed_application ON reviewed_application.id = review_events.application_id WHERE reviewed_application.submitted_at IS NOT NULL AND review_events.reviewed_at >= reviewed_application.submitted_at GROUP BY review_events.application_id) first_review ON first_review.application_id = a.id';
+            $reviewQuery = $database->prepare('SELECT ROUND(AVG(' . $reviewInterval . '), 1)' . $joins . $firstReviewJoin . ' WHERE ' . $whereSql . ' AND a.submitted_at IS NOT NULL');
             $reviewQuery->execute($parameters);
             $summary['average_review_hours'] = $reviewQuery->fetchColumn();
+            $countCondition = static function (string $condition, array $extra = []) use ($database, $joins, $whereSql, $parameters): int {
+                $query = $database->prepare('SELECT COUNT(DISTINCT a.id)' . $joins . 'WHERE ' . $whereSql . ' AND ' . $condition);
+                $query->execute($parameters + $extra);
+                return (int) $query->fetchColumn();
+            };
+            $funnelStages = [
+                ['key' => 'submitted', 'label' => 'Submitted', 'condition' => $drilldownConditions['stage:submitted']],
+                ['key' => 'screening', 'label' => 'Screening', 'condition' => $drilldownConditions['stage:screening']],
+                ['key' => 'interview', 'label' => 'Interview', 'condition' => $drilldownConditions['stage:interview']],
+                ['key' => 'accepted', 'label' => 'Accepted', 'condition' => $drilldownConditions['stage:accepted']],
+                ['key' => 'enrolled', 'label' => 'Enrolled', 'condition' => $drilldownConditions['stage:enrolled']],
+            ];
+            $previousStageCount = null;
+            foreach ($funnelStages as &$stage) {
+                $stage['count'] = $countCondition($stage['condition']);
+                $stage['percentage'] = $totalApplications > 0 ? round($stage['count'] / $totalApplications * 100, 1) : 0.0;
+                $stage['conversion'] = $previousStageCount === null ? null : ($previousStageCount > 0 ? round($stage['count'] / $previousStageCount * 100, 1) : null);
+                $previousStageCount = $stage['count'];
+            }
+            unset($stage);
+            $summary['funnel'] = $funnelStages;
+            $summary['attention'] = [
+                'unassigned' => $countCondition($drilldownConditions['attention:unassigned']),
+                'interviews_week' => $countCondition($drilldownConditions['attention:interviews_week'], ['drill_week_start' => $weekStart, 'drill_week_end' => $weekEnd]),
+                'idle' => $countCondition($drilldownConditions['attention:idle'], ['drill_idle_submission_before' => $idleBefore, 'drill_idle_history_before' => $idleBefore, 'drill_idle_note_before' => $idleBefore, 'drill_idle_interview_before' => $idleBefore, 'drill_idle_document_before' => $idleBefore]),
+                'incomplete_documents' => $countCondition($drilldownConditions['attention:incomplete_documents']),
+            ];
+            $summary['side_states'] = [
+                'declined' => (int) ($summary['statuses']['declined'] ?? 0),
+                'documents_incomplete' => (int) ($summary['statuses']['documents_incomplete'] ?? 0),
+            ];
         }
 
-        return ['rows' => $statement->fetchAll(), 'total' => $total, 'summary' => $summary, 'truncated' => $allRows && !$paginateAllRows && $total > $pageSize, 'page' => $pagination['page'], 'page_size' => $pageSize, 'pagination' => $pagination, 'filters' => $input];
+        $filters = $input;
+        $filters['date_range'] = $datePreset;
+        $filters['drilldown'] = $drilldown;
+        $filters['report_sort'] = $sortKey;
+        $filters['report_direction'] = $sortDirection;
+        return ['rows' => $statement->fetchAll(), 'total' => $totalApplications, 'table_total' => $rowTotal, 'summary' => $summary, 'truncated' => $allRows && !$paginateAllRows && $rowTotal > $pageSize, 'page' => $pagination['page'], 'page_size' => $pageSize, 'pagination' => $pagination, 'filters' => $filters];
     }
 
     public static function auditLog(PDO $database, array $input, bool $allRows = false): array
@@ -404,11 +568,42 @@ final class StaffService
         $pagination = Pagination::make($total, $input, 'page', 'per_page', 20);
         $limit = $allRows ? max(1, $total) : $pagination['page_size'];
         $offset = $allRows ? 0 : $pagination['offset'];
-        $query = 'SELECT id, user_id, actor_label, action, entity_type, entity_id, outcome, severity, ip_address, created_at FROM audit_logs WHERE ' . $whereSql . ' ORDER BY created_at DESC, id DESC LIMIT ' . $limit . ' OFFSET ' . $offset;
+        $query = 'SELECT audit_logs.id, audit_logs.user_id, audit_logs.actor_label, users.role AS actor_role, audit_logs.action, audit_logs.entity_type, audit_logs.entity_id, audit_logs.outcome, audit_logs.severity, audit_logs.ip_address, audit_logs.details, audit_logs.created_at FROM audit_logs LEFT JOIN users ON users.id = audit_logs.user_id WHERE ' . $whereSql . ' ORDER BY audit_logs.created_at DESC, audit_logs.id DESC LIMIT ' . $limit . ' OFFSET ' . $offset;
         $statement = $database->prepare($query);
         $statement->execute($parameters);
+        $events = $statement->fetchAll();
+        foreach ($events as &$event) {
+            $event['safe_details'] = self::safeAuditDetails($event['details'] ?? null);
+            unset($event['details']);
+        }
+        unset($event);
 
-        return ['rows' => $statement->fetchAll(), 'pagination' => $pagination, 'filters' => $filter['filters']];
+        $manilaToday = new DateTimeImmutable('today', new DateTimeZone('Asia/Manila'));
+        $todayStart = $manilaToday->setTimezone(new DateTimeZone('UTC'))->format('Y-m-d H:i:s');
+        $todayEnd = $manilaToday->modify('+1 day')->setTimezone(new DateTimeZone('UTC'))->format('Y-m-d H:i:s');
+        $summaryQuery = $database->prepare('SELECT COUNT(*) AS total, SUM(CASE WHEN created_at >= :today_start AND created_at < :today_end THEN 1 ELSE 0 END) AS today, SUM(CASE WHEN outcome = \'success\' THEN 1 ELSE 0 END) AS successful, SUM(CASE WHEN outcome = \'failure\' THEN 1 ELSE 0 END) AS failed FROM audit_logs WHERE ' . $whereSql);
+        $summaryQuery->execute($parameters + ['today_start' => $todayStart, 'today_end' => $todayEnd]);
+        $summary = $summaryQuery->fetch() ?: ['total' => 0, 'today' => 0, 'successful' => 0, 'failed' => 0];
+
+        return ['rows' => $events, 'pagination' => $pagination, 'filters' => $filter['filters'], 'summary' => array_map('intval', $summary)];
+    }
+
+    public static function safeAuditDetails(?string $json): ?array
+    {
+        if ($json === null || $json === '') return null;
+        $decoded = json_decode($json, true);
+        if (!is_array($decoded)) return null;
+        return self::redactAuditDetails($decoded);
+    }
+
+    private static function redactAuditDetails(array $details): array
+    {
+        $safe = [];
+        foreach ($details as $key => $value) {
+            if (preg_match('/password|passwd|token|secret|credential|csrf|session|authorization|cookie/i', (string) $key)) continue;
+            $safe[$key] = is_array($value) ? self::redactAuditDetails($value) : $value;
+        }
+        return $safe;
     }
 
     private static function auditLogFilter(PDO $database, array $input): array
@@ -570,7 +765,7 @@ final class StaffService
                 'user_id' => $user['id'],
                 'actor' => mb_substr($user['full_name'], 0, 160),
                 'ip' => request_ip(),
-                'details' => json_encode(['row_count' => $rowCount, 'filters' => array_intersect_key($filters, array_flip(['status', 'program_id', 'year_id', 'start_date', 'end_date', 'reviewer_id', 'documents']))], JSON_THROW_ON_ERROR),
+                'details' => json_encode(['row_count' => $rowCount, 'filters' => array_intersect_key($filters, array_flip(['q', 'status', 'program_id', 'year_id', 'date_range', 'start_date', 'end_date', 'reviewer_id', 'documents', 'drilldown', 'report_sort', 'report_direction']))], JSON_THROW_ON_ERROR),
             ]);
             $database->commit();
         } catch (Throwable $error) {
@@ -579,7 +774,7 @@ final class StaffService
         }
     }
 
-    public static function detail(PDO $database, array $user, int $applicationId, bool $lock = false, array $input = []): ?array
+    public static function detail(PDO $database, array $user, int $applicationId, bool $lock = false, array $input = [], bool $includeAllActivity = false): ?array
     {
         if (!in_array($user['role'] ?? '', ['reviewer', 'admin'], true)) {
             return null;
@@ -639,7 +834,9 @@ final class StaffService
         $historyDocumentCount = $database->prepare('SELECT COUNT(DISTINCT d.id) FROM application_documents d JOIN admission_requirements r ON r.id = d.requirement_id WHERE ' . $documentHistoryWhereSql);
         $historyDocumentCount->execute($documentHistoryParameters);
         $documentHistoryPagination = Pagination::make((int) $historyDocumentCount->fetchColumn(), $input, 'document_history_page', 'per_page', 20);
-        $historyDocuments = $database->prepare('SELECT r.name AS requirement_name, d.id AS document_id, d.version, d.original_name, d.review_status, d.uploaded_at, review.decision, review.feedback, review.reviewed_at, reviewer.full_name AS reviewer_name FROM application_documents d JOIN admission_requirements r ON r.id = d.requirement_id LEFT JOIN document_reviews review ON review.id = (SELECT MAX(latest_review.id) FROM document_reviews latest_review WHERE latest_review.document_id = d.id) LEFT JOIN users reviewer ON reviewer.id = review.reviewer_id WHERE ' . $documentHistoryWhereSql . ' ORDER BY d.requirement_id, d.version DESC, review.reviewed_at DESC, d.id DESC LIMIT ' . $documentHistoryPagination['page_size'] . ' OFFSET ' . $documentHistoryPagination['offset']);
+        $historyDocumentLimit = $includeAllActivity ? max(1, (int) $documentHistoryPagination['total']) : (int) $documentHistoryPagination['page_size'];
+        $historyDocumentOffset = $includeAllActivity ? 0 : (int) $documentHistoryPagination['offset'];
+        $historyDocuments = $database->prepare('SELECT r.name AS requirement_name, d.id AS document_id, d.version, d.original_name, d.review_status, d.uploaded_at, review.decision, review.feedback, review.reviewed_at, reviewer.full_name AS reviewer_name FROM application_documents d JOIN admission_requirements r ON r.id = d.requirement_id LEFT JOIN document_reviews review ON review.id = (SELECT MAX(latest_review.id) FROM document_reviews latest_review WHERE latest_review.document_id = d.id) LEFT JOIN users reviewer ON reviewer.id = review.reviewer_id WHERE ' . $documentHistoryWhereSql . ' ORDER BY d.requirement_id, d.version DESC, review.reviewed_at DESC, d.id DESC LIMIT ' . $historyDocumentLimit . ' OFFSET ' . $historyDocumentOffset);
         $historyDocuments->execute($documentHistoryParameters);
         $application['document_history'] = $historyDocuments->fetchAll();
         $application['document_history_pagination'] = $documentHistoryPagination;
@@ -676,7 +873,9 @@ final class StaffService
         $noteCount = $database->prepare('SELECT COUNT(*) FROM screening_notes n JOIN users u ON u.id = n.author_id WHERE ' . $notesWhereSql);
         $noteCount->execute($notesParameters);
         $notesPagination = Pagination::make((int) $noteCount->fetchColumn(), $input, 'notes_page', 'per_page', 20);
-        $notes = $database->prepare('SELECT n.note, n.created_at, u.full_name FROM screening_notes n JOIN users u ON u.id = n.author_id WHERE ' . $notesWhereSql . ' ORDER BY n.created_at DESC, n.id DESC LIMIT ' . $notesPagination['page_size'] . ' OFFSET ' . $notesPagination['offset']);
+        $notesLimit = $includeAllActivity ? max(1, (int) $notesPagination['total']) : (int) $notesPagination['page_size'];
+        $notesOffset = $includeAllActivity ? 0 : (int) $notesPagination['offset'];
+        $notes = $database->prepare('SELECT n.note, n.created_at, u.full_name FROM screening_notes n JOIN users u ON u.id = n.author_id WHERE ' . $notesWhereSql . ' ORDER BY n.created_at DESC, n.id DESC LIMIT ' . $notesLimit . ' OFFSET ' . $notesOffset);
         $notes->execute($notesParameters);
         $application['notes'] = $notes->fetchAll();
         $application['notes_pagination'] = $notesPagination;
@@ -719,7 +918,9 @@ final class StaffService
         $statusHistoryCount = $database->prepare('SELECT COUNT(*) FROM application_status_history WHERE ' . $historyWhereSql);
         $statusHistoryCount->execute($historyParameters);
         $statusHistoryPagination = Pagination::make((int) $statusHistoryCount->fetchColumn(), $input, 'history_page', 'per_page', 20);
-        $history = $database->prepare('SELECT from_status, to_status, note, created_at FROM application_status_history WHERE ' . $historyWhereSql . ' ORDER BY created_at DESC, id DESC LIMIT ' . $statusHistoryPagination['page_size'] . ' OFFSET ' . $statusHistoryPagination['offset']);
+        $statusHistoryLimit = $includeAllActivity ? max(1, (int) $statusHistoryPagination['total']) : (int) $statusHistoryPagination['page_size'];
+        $statusHistoryOffset = $includeAllActivity ? 0 : (int) $statusHistoryPagination['offset'];
+        $history = $database->prepare('SELECT from_status, to_status, note, created_at FROM application_status_history WHERE ' . $historyWhereSql . ' ORDER BY created_at DESC, id DESC LIMIT ' . $statusHistoryLimit . ' OFFSET ' . $statusHistoryOffset);
         $history->execute($historyParameters);
         $application['history'] = $history->fetchAll();
         $application['history_pagination'] = $statusHistoryPagination;
@@ -759,7 +960,9 @@ final class StaffService
         $interviewCount = $database->prepare('SELECT COUNT(*)' . $interviewFrom . 'WHERE ' . $interviewWhereSql);
         $interviewCount->execute($interviewParameters);
         $interviewPagination = Pagination::make((int) $interviewCount->fetchColumn(), $input, 'interviews_page', 'per_page', 20);
-        $interviews = $database->prepare('SELECT i.id, i.interviewer_id, i.starts_at_utc, i.ends_at_utc, i.instructions, i.status, i.notes, interviewer.full_name AS interviewer_name' . $interviewFrom . 'WHERE ' . $interviewWhereSql . ' ORDER BY i.starts_at_utc DESC, i.id DESC LIMIT ' . $interviewPagination['page_size'] . ' OFFSET ' . $interviewPagination['offset']);
+        $interviewLimit = $includeAllActivity ? max(1, (int) $interviewPagination['total']) : (int) $interviewPagination['page_size'];
+        $interviewOffset = $includeAllActivity ? 0 : (int) $interviewPagination['offset'];
+        $interviews = $database->prepare('SELECT i.id, i.interviewer_id, i.starts_at_utc, i.ends_at_utc, i.instructions, i.status, i.notes, interviewer.full_name AS interviewer_name' . $interviewFrom . 'WHERE ' . $interviewWhereSql . ' ORDER BY i.starts_at_utc DESC, i.id DESC LIMIT ' . $interviewLimit . ' OFFSET ' . $interviewOffset);
         $interviews->execute($interviewParameters);
         $application['interviews'] = $interviews->fetchAll();
         $application['interviews_pagination'] = $interviewPagination;

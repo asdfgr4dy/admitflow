@@ -393,7 +393,7 @@ final class NotificationService
         $deadline->execute(['today' => gmdate('Y-m-d'), 'soon' => gmdate('Y-m-d', time() + 14 * 86400)]);
         $intake = $deadline->fetch();
         if (is_array($intake)) {
-            self::addAlert($alerts, 'admin:intake-deadline:' . (int) $intake['id'] . ':' . $intake['application_deadline'], 'Admission deadline approaching', $intake['label'] . ' has a configured application deadline within 14 days.', '/staff/settings#year-settings', $intake['application_deadline'] . ' 00:00:00');
+            self::addAlert($alerts, 'admin:intake-deadline:' . (int) $intake['id'] . ':' . $intake['application_deadline'], 'Admission deadline approaching', $intake['label'] . ' has a configured application deadline within 14 days.', '/staff/academic/years', $intake['application_deadline'] . ' 00:00:00');
         }
 
         return $alerts;

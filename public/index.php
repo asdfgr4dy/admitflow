@@ -10,6 +10,7 @@ require dirname(__DIR__) . '/app/StaffService.php';
 require dirname(__DIR__) . '/app/PasswordResetService.php';
 require dirname(__DIR__) . '/app/BackupIntegrity.php';
 require dirname(__DIR__) . '/app/BackupService.php';
+require dirname(__DIR__) . '/app/AutomatedBackupRunner.php';
 require dirname(__DIR__) . '/app/NotificationService.php';
 require dirname(__DIR__) . '/app/AccountSettingsService.php';
 require dirname(__DIR__) . '/app/StaffAccountService.php';
@@ -230,23 +231,35 @@ try {
                     $programId = (int) ($_POST['program_id'] ?? 0);
                     $code = strtoupper(trim((string) ($_POST['code'] ?? '')));
                     $name = trim((string) ($_POST['name'] ?? ''));
-                    if (!preg_match('/^[A-Z0-9_-]{2,30}$/', $code) || $name === '' || mb_strlen($name) > 160) {
-                        throw new DomainException('Enter a valid program code and name.');
+                    $description = trim((string) ($_POST['description'] ?? ''));
+                    if (!preg_match('/^[A-Z0-9_-]{2,12}$/', $code) || $name === '' || mb_strlen($name) > 100 || mb_strlen($description) > 500) {
+                        throw new DomainException('Enter a program code of 2 to 12 characters, a name of 100 characters or fewer, and a description of 500 characters or fewer.');
+                    }
+                    $duplicateName = $database->prepare('SELECT COUNT(*) FROM academic_programs WHERE LOWER(name) = LOWER(:name) AND id <> :id');
+                    $duplicateName->execute(['name' => $name, 'id' => $programId]);
+                    if ((int) $duplicateName->fetchColumn() > 0) throw new DomainException('That program name is already used by another program.');
+                    $previousProgram = null;
+                    if ($programId > 0) {
+                        $previousQuery = $database->prepare('SELECT code, name, description, is_active FROM academic_programs WHERE id = :id');
+                        $previousQuery->execute(['id' => $programId]);
+                        $previousProgram = $previousQuery->fetch();
+                        if (!is_array($previousProgram)) throw new DomainException('That program could not be found.');
                     }
                     $database->beginTransaction();
                     try {
                         if ($programId > 0) {
-                            $save = $database->prepare('UPDATE academic_programs SET code = :code, name = :name, is_active = :active WHERE id = :id');
-                            $save->execute(['code' => $code, 'name' => $name, 'active' => ($_POST['is_active'] ?? '') === '1' ? 1 : 0, 'id' => $programId]);
-                            $action = 'program.updated';
+                            $save = $database->prepare('UPDATE academic_programs SET code = :code, name = :name, description = :description, is_active = :active WHERE id = :id');
+                            $save->execute(['code' => $code, 'name' => $name, 'description' => $description !== '' ? $description : null, 'active' => ($_POST['is_active'] ?? '') === '1' ? 1 : 0, 'id' => $programId]);
+                            $isActive = ($_POST['is_active'] ?? '') === '1' ? 1 : 0;
+                            $action = (int) $previousProgram['is_active'] !== $isActive ? ($isActive ? 'program.activated' : 'program.deactivated') : 'program.updated';
                         } else {
-                            $save = $database->prepare('INSERT INTO academic_programs (code, name, is_active) VALUES (:code, :name, :active)');
-                            $save->execute(['code' => $code, 'name' => $name, 'active' => ($_POST['is_active'] ?? '') === '1' ? 1 : 0]);
+                            $save = $database->prepare('INSERT INTO academic_programs (code, name, description, is_active) VALUES (:code, :name, :description, :active)');
+                            $save->execute(['code' => $code, 'name' => $name, 'description' => $description !== '' ? $description : null, 'active' => ($_POST['is_active'] ?? '') === '1' ? 1 : 0]);
                             $programId = (int) $database->lastInsertId();
                             $action = 'program.created';
                         }
-                        $audit = $database->prepare('INSERT INTO audit_logs (user_id, actor_label, action, entity_type, entity_id, outcome, ip_address) VALUES (:user_id, :actor, :action, \'academic_program\', :entity_id, \'success\', :ip)');
-                        $audit->execute(['user_id' => $user['id'], 'actor' => $user['full_name'], 'action' => $action, 'entity_id' => $programId, 'ip' => request_ip()]);
+                        $audit = $database->prepare('INSERT INTO audit_logs (user_id, actor_label, action, entity_type, entity_id, outcome, ip_address, details) VALUES (:user_id, :actor, :action, \'academic_program\', :entity_id, \'success\', :ip, :details)');
+                        $audit->execute(['user_id' => $user['id'], 'actor' => $user['full_name'], 'action' => $action, 'entity_id' => $programId, 'ip' => request_ip(), 'details' => json_encode(['before' => $previousProgram, 'after' => ['code' => $code, 'name' => $name, 'description' => $description !== '' ? $description : null, 'is_active' => ($_POST['is_active'] ?? '') === '1']], JSON_THROW_ON_ERROR)]);
                         $database->commit();
                     } catch (Throwable $error) {
                         if ($database->inTransaction()) {
@@ -257,8 +270,8 @@ try {
                         }
                         throw $error;
                     }
-                    flash('success', 'Program settings saved.');
-                    redirect('/staff/settings');
+                    flash('success', $action === 'program.activated' ? 'Program activated.' : ($action === 'program.deactivated' ? 'Program deactivated. Existing applications remain unchanged.' : 'Program settings saved.'));
+                    redirect('/staff/academic/programs?updated_id=' . $programId);
                 }
                 if ($path === '/staff/academic-setting/delete') {
                     if ($user['role'] !== 'admin') {
@@ -309,7 +322,11 @@ try {
                         throw $error;
                     }
                     flash('success', ucfirst($setting['label']) . ' deleted.');
-                    redirect('/staff/settings' . ($settingType === 'requirement' ? '#requirements' : ($settingType === 'year' ? '#year-settings' : '#program-settings')));
+                    redirect(match ($settingType) {
+                        'requirement' => '/staff/academic/requirements',
+                        'year' => '/staff/academic/years',
+                        default => '/staff/academic/programs',
+                    });
                 }
                 if ($path === '/staff/year/save') {
                     if ($user['role'] !== 'admin') {
@@ -327,6 +344,13 @@ try {
                     if ($label === '' || mb_strlen($label) > 20 || !$validDate($startsOn) || !$validDate($endsOn) || $endsOn <= $startsOn || ($deadline !== '' && !$validDate($deadline))) {
                         throw new DomainException('Enter a valid label, date range, and optional deadline.');
                     }
+                    $previousYear = null;
+                    if ($yearId > 0) {
+                        $previousQuery = $database->prepare('SELECT label, starts_on, ends_on, application_deadline, is_open FROM academic_years WHERE id = :id');
+                        $previousQuery->execute(['id' => $yearId]);
+                        $previousYear = $previousQuery->fetch();
+                        if (!is_array($previousYear)) throw new DomainException('That academic year could not be found.');
+                    }
                     $database->beginTransaction();
                     try {
                         if (($_POST['is_open'] ?? '') === '1') {
@@ -335,15 +359,16 @@ try {
                         if ($yearId > 0) {
                             $save = $database->prepare('UPDATE academic_years SET label = :label, starts_on = :starts_on, ends_on = :ends_on, application_deadline = :deadline, is_open = :is_open WHERE id = :id');
                             $save->execute(['label' => $label, 'starts_on' => $startsOn, 'ends_on' => $endsOn, 'deadline' => $deadline ?: null, 'is_open' => ($_POST['is_open'] ?? '') === '1' ? 1 : 0, 'id' => $yearId]);
-                            $action = 'academic_year.updated';
+                            $isOpen = ($_POST['is_open'] ?? '') === '1' ? 1 : 0;
+                            $action = (int) $previousYear['is_open'] !== $isOpen ? 'academic_year.current_changed' : 'academic_year.updated';
                         } else {
                             $save = $database->prepare('INSERT INTO academic_years (label, starts_on, ends_on, application_deadline, is_open) VALUES (:label, :starts_on, :ends_on, :deadline, :is_open)');
                             $save->execute(['label' => $label, 'starts_on' => $startsOn, 'ends_on' => $endsOn, 'deadline' => $deadline ?: null, 'is_open' => ($_POST['is_open'] ?? '') === '1' ? 1 : 0]);
                             $yearId = (int) $database->lastInsertId();
                             $action = 'academic_year.created';
                         }
-                        $audit = $database->prepare('INSERT INTO audit_logs (user_id, actor_label, action, entity_type, entity_id, outcome, ip_address) VALUES (:user_id, :actor, :action, \'academic_year\', :entity_id, \'success\', :ip)');
-                        $audit->execute(['user_id' => $user['id'], 'actor' => $user['full_name'], 'action' => $action, 'entity_id' => $yearId, 'ip' => request_ip()]);
+                        $audit = $database->prepare('INSERT INTO audit_logs (user_id, actor_label, action, entity_type, entity_id, outcome, ip_address, details) VALUES (:user_id, :actor, :action, \'academic_year\', :entity_id, \'success\', :ip, :details)');
+                        $audit->execute(['user_id' => $user['id'], 'actor' => $user['full_name'], 'action' => $action, 'entity_id' => $yearId, 'ip' => request_ip(), 'details' => json_encode(['before' => $previousYear, 'after' => ['label' => $label, 'starts_on' => $startsOn, 'ends_on' => $endsOn, 'application_deadline' => $deadline ?: null, 'is_open' => ($_POST['is_open'] ?? '') === '1']], JSON_THROW_ON_ERROR)]);
                         $database->commit();
                     } catch (Throwable $error) {
                         if ($database->inTransaction()) $database->rollBack();
@@ -352,8 +377,8 @@ try {
                         }
                         throw $error;
                     }
-                    flash('success', 'Academic year settings saved.');
-                    redirect('/staff/settings');
+                    flash('success', $action === 'academic_year.current_changed' ? 'Academic year and current intake updated. Existing applications keep their assigned year.' : 'Academic year settings saved.');
+                    redirect('/staff/academic/years?updated_id=' . $yearId);
                 }
                 if ($path === '/staff/requirement/save') {
                     if ($user['role'] !== 'admin') {
@@ -372,34 +397,48 @@ try {
                     if (!preg_match('/^[A-Z0-9_-]{2,40}$/', $code) || $name === '' || mb_strlen($name) > 160 || mb_strlen($instructions) > 1000 || $maxBytes === false || $extensionList === [] || array_diff($extensionList, $allowedExtensions) !== []) {
                         throw new DomainException('Enter a valid requirement name, code, file type, and size limit.');
                     }
-                    if ($programId !== null && !$database->query('SELECT 1 FROM academic_programs WHERE id = ' . (int) $programId)->fetchColumn()) {
-                        throw new DomainException('Choose an existing academic program.');
+                    $previousRequirement = null;
+                    if ($requirementId > 0) {
+                        $previousQuery = $database->prepare('SELECT code, name, instructions, academic_program_id, academic_year_id, allowed_extensions, max_file_size_bytes, is_required, is_active FROM admission_requirements WHERE id = :id');
+                        $previousQuery->execute(['id' => $requirementId]);
+                        $previousRequirement = $previousQuery->fetch();
+                        if (!is_array($previousRequirement)) throw new DomainException('That requirement could not be found.');
                     }
-                    if ($yearId !== null && !$database->query('SELECT 1 FROM academic_years WHERE id = ' . (int) $yearId)->fetchColumn()) {
-                        throw new DomainException('Choose an existing academic year.');
+                    if ($programId !== null) {
+                        $programCheck = $database->prepare('SELECT is_active FROM academic_programs WHERE id = :id');
+                        $programCheck->execute(['id' => $programId]);
+                        $programActive = $programCheck->fetchColumn();
+                        if ($programActive === false || (!(bool) $programActive && (int) ($previousRequirement['academic_program_id'] ?? 0) !== $programId)) throw new DomainException('Choose an active academic program for this requirement.');
+                    }
+                    if ($yearId !== null) {
+                        $yearCheck = $database->prepare('SELECT is_open FROM academic_years WHERE id = :id');
+                        $yearCheck->execute(['id' => $yearId]);
+                        $yearOpen = $yearCheck->fetchColumn();
+                        if ($yearOpen === false || (!(bool) $yearOpen && (int) ($previousRequirement['academic_year_id'] ?? 0) !== $yearId)) throw new DomainException('Choose an open academic year for this requirement.');
                     }
                     $database->beginTransaction();
                     try {
                         if ($requirementId > 0) {
                             $save = $database->prepare('UPDATE admission_requirements SET code = :code, name = :name, instructions = :instructions, academic_program_id = :program_id, academic_year_id = :year_id, allowed_extensions = :extensions, max_file_size_bytes = :max_bytes, is_required = :required, is_active = :active WHERE id = :id');
                             $save->execute(['code' => $code, 'name' => $name, 'instructions' => $instructions ?: null, 'program_id' => $programId, 'year_id' => $yearId, 'extensions' => implode(',', $extensionList), 'max_bytes' => $maxBytes, 'required' => ($_POST['is_required'] ?? '') === '1' ? 1 : 0, 'active' => ($_POST['is_active'] ?? '') === '1' ? 1 : 0, 'id' => $requirementId]);
-                            $action = 'requirement.updated';
+                            $isActive = ($_POST['is_active'] ?? '') === '1' ? 1 : 0;
+                            $action = (int) $previousRequirement['is_active'] !== $isActive ? ($isActive ? 'requirement.activated' : 'requirement.deactivated') : 'requirement.updated';
                         } else {
                             $save = $database->prepare('INSERT INTO admission_requirements (code, name, instructions, academic_program_id, academic_year_id, allowed_extensions, max_file_size_bytes, is_required, is_active) VALUES (:code, :name, :instructions, :program_id, :year_id, :extensions, :max_bytes, :required, :active)');
                             $save->execute(['code' => $code, 'name' => $name, 'instructions' => $instructions ?: null, 'program_id' => $programId, 'year_id' => $yearId, 'extensions' => implode(',', $extensionList), 'max_bytes' => $maxBytes, 'required' => ($_POST['is_required'] ?? '') === '1' ? 1 : 0, 'active' => ($_POST['is_active'] ?? '') === '1' ? 1 : 0]);
                             $requirementId = (int) $database->lastInsertId();
                             $action = 'requirement.created';
                         }
-                        $audit = $database->prepare('INSERT INTO audit_logs (user_id, actor_label, action, entity_type, entity_id, outcome, ip_address) VALUES (:user_id, :actor, :action, \'admission_requirement\', :entity_id, \'success\', :ip)');
-                        $audit->execute(['user_id' => $user['id'], 'actor' => $user['full_name'], 'action' => $action, 'entity_id' => $requirementId, 'ip' => request_ip()]);
+                        $audit = $database->prepare('INSERT INTO audit_logs (user_id, actor_label, action, entity_type, entity_id, outcome, ip_address, details) VALUES (:user_id, :actor, :action, \'admission_requirement\', :entity_id, \'success\', :ip, :details)');
+                        $audit->execute(['user_id' => $user['id'], 'actor' => $user['full_name'], 'action' => $action, 'entity_id' => $requirementId, 'ip' => request_ip(), 'details' => json_encode(['before' => $previousRequirement, 'after' => ['code' => $code, 'name' => $name, 'instructions' => $instructions ?: null, 'academic_program_id' => $programId, 'academic_year_id' => $yearId, 'allowed_extensions' => implode(',', $extensionList), 'max_file_size_bytes' => $maxBytes, 'is_required' => ($_POST['is_required'] ?? '') === '1', 'is_active' => ($_POST['is_active'] ?? '') === '1']], JSON_THROW_ON_ERROR)]);
                         $database->commit();
                     } catch (Throwable $error) {
                         if ($database->inTransaction()) $database->rollBack();
                         if ($error instanceof PDOException && $error->getCode() === '23000') throw new DomainException('That requirement code already exists in the selected scope.');
                         throw $error;
                     }
-                    flash('success', 'Admission requirement saved.');
-                    redirect('/staff/settings#requirements');
+                    flash('success', $action === 'requirement.activated' ? 'Requirement activated.' : ($action === 'requirement.deactivated' ? 'Requirement deactivated. Previously submitted documents and reviews are preserved.' : 'Admission requirement saved.'));
+                    redirect('/staff/academic/requirements?updated_id=' . $requirementId);
                 }
                 if ($path === '/staff/announcement/delete') {
                     AnnouncementService::delete($database, $user, (int) ($_POST['announcement_id'] ?? 0));
@@ -457,7 +496,7 @@ try {
                         $createdAccount = StaffAccountService::create($database, $user, (string) ($_POST['full_name'] ?? ''), (string) ($_POST['email'] ?? ''), (string) ($_POST['role'] ?? ''));
                         $_SESSION['staff_setup_link'] = $createdAccount['setup_path'];
                         flash('success', 'Staff account created. Share the one-time password setup link securely within 30 minutes. No email was sent.');
-                        redirect('/staff/users');
+                        redirect('/staff/users/staff');
                     } else {
                         $targetQuery = $database->prepare('SELECT id, role, account_status FROM users WHERE id = :id');
                         $targetQuery->execute(['id' => $userId]);
@@ -495,7 +534,11 @@ try {
                     $audit->execute(['user_id' => $user['id'], 'actor' => $user['full_name'], 'action' => $action, 'entity_id' => $userId, 'ip' => request_ip()]);
                     $database->commit();
                     flash('success', 'Account role and status saved.');
-                    redirect('/staff/users');
+                        redirect(match ($newRole) {
+                            'admin' => '/staff/users/administrators',
+                            'student' => '/staff/users/students',
+                            default => '/staff/users/staff',
+                        });
                 }
                 if (in_array($path, ['/staff/backup/database', '/staff/backup/files'], true)) {
                     if ($user['role'] !== 'admin') {
@@ -589,6 +632,22 @@ try {
                     }
                     redirect('/staff/backups');
                 }
+                if ($path === '/staff/backup/restore-files') {
+                    if ($user['role'] !== 'admin') {
+                        throw new DomainException('Administrator access is required to restore file backups.');
+                    }
+                    $backupId = (int) ($_POST['backup_id'] ?? 0);
+                    try {
+                        $safetyBackupId = BackupService::restoreFiles($database, $user, $backupId, (string) ($_POST['confirmation'] ?? ''));
+                        flash('success', 'File archive restored. Verified safety backup #' . $safetyBackupId . ' is retained in backup history.');
+                    } catch (DomainException $error) {
+                        throw $error;
+                    } catch (Throwable $error) {
+                        error_log('[admitflow backup] File archive restore failed (' . $error::class . ').');
+                        flash('warning', 'File restoration failed and may be partial. Review the retained verified safety archive before attempting recovery.');
+                    }
+                    redirect('/staff/backups');
+                }
                 if ($path === '/staff/reports.csv') {
                     $report = StaffService::applications($database, $user, $_POST, true);
                     $output = fopen('php://temp/maxmemory:2097152', 'w+b');
@@ -596,15 +655,15 @@ try {
                         throw new RuntimeException('Could not prepare the report export.');
                     }
                     fwrite($output, "\xEF\xBB\xBF");
-                    fputcsv($output, ['Reference', 'Applicant', 'Program', 'Academic year', 'Submitted (UTC)', 'Documents uploaded', 'Required documents', 'Reviewer', 'Status']);
+                    fputcsv($output, ['Reference', 'Applicant', 'Program', 'Academic year', 'Submitted (UTC)', 'Documents verified', 'Required documents', 'Reviewer', 'Status']);
                     if ($report['truncated']) {
                         fputcsv($output, ['NOTICE', 'Only the first 5,000 of ' . $report['total'] . ' matching applications are included. Narrow report filters for a complete export.']);
                     }
                     foreach ($report['rows'] as $row) {
-                        $cells = [$row['reference_number'], $row['full_name'], $row['program_name'], $row['year_label'], $row['submitted_at'], $row['uploaded_documents'], $row['required_documents'], $row['reviewer_name'], $row['status']];
+                        $cells = [$row['reference_number'], $row['full_name'], $row['program_name'], $row['year_label'], $row['submitted_at'], $row['verified_documents'], $row['required_documents'], $row['reviewer_name'], $row['status']];
                         fputcsv($output, array_map(static function ($value): string {
                             $cell = (string) ($value ?? '');
-                            return preg_match('/^[\s]*[=+\-@]/', $cell) ? "'" . $cell : $cell;
+                            return preg_match('/^[\x00-\x20\p{Z}]*[=+\-@]/u', $cell) ? "'" . $cell : $cell;
                         }, $cells));
                     }
                     $exportSize = ftell($output);
@@ -616,6 +675,60 @@ try {
                     fpassthru($output);
                     fclose($output);
                     exit;
+                }
+                if ($path === '/staff/reports.pdf') {
+                    if (!in_array($user['role'] ?? '', ['reviewer', 'admin'], true)) {
+                        http_response_code(403);
+                        header('Content-Type: text/plain; charset=utf-8');
+                        exit('Admissions staff access is required.');
+                    }
+                    try {
+                        $report = StaffService::applications($database, $user, $_POST, true);
+                        $filterOptions = StaffService::filters($database, $user);
+                        $report['display_filters'] = $report['filters'];
+                        $programNames = array_column($filterOptions['programs'], 'name', 'id');
+                        $yearNames = array_column($filterOptions['years'], 'label', 'id');
+                        $reviewerNames = array_column($filterOptions['reviewers'], 'full_name', 'id');
+                        $statusNames = ['submitted' => 'Submitted', 'in_screening' => 'In Screening', 'documents_incomplete' => 'Documents Incomplete', 'interview_scheduled' => 'Interview Scheduled', 'accepted' => 'Accepted', 'declined' => 'Declined', 'enrolled' => 'Enrolled'];
+                        if (($report['display_filters']['program_id'] ?? '') !== '') $report['display_filters']['program_id'] = $programNames[$report['display_filters']['program_id']] ?? 'Selected program';
+                        if (($report['display_filters']['year_id'] ?? '') !== '') $report['display_filters']['year_id'] = $yearNames[$report['display_filters']['year_id']] ?? 'Selected academic year';
+                        if (($report['display_filters']['reviewer_id'] ?? '') !== '') $report['display_filters']['reviewer_id'] = $reviewerNames[$report['display_filters']['reviewer_id']] ?? 'Selected reviewer';
+                        if (($report['display_filters']['status'] ?? '') !== '') $report['display_filters']['status'] = $statusNames[$report['display_filters']['status']] ?? $report['display_filters']['status'];
+                        if (($report['display_filters']['documents'] ?? '') !== '') $report['display_filters']['documents'] = $report['display_filters']['documents'] === 'complete' ? 'All verified' : 'Needs attention';
+                        if (($report['filters']['date_range'] ?? '') !== '') $report['display_filters']['date_range'] = ['last7' => 'Last 7 Days', 'last30' => 'Last 30 Days', 'term' => 'This Term', 'custom' => 'Custom Range'][$report['filters']['date_range']] ?? 'Selected range';
+                        $dateRangeLabels = ['' => 'Any date', 'last7' => 'Last 7 days', 'last30' => 'Last 30 days', 'term' => 'This Term', 'custom' => 'Custom Range'];
+                        ob_start();
+                        require dirname(__DIR__) . '/resources/views/staff/reports-pdf.php';
+                        $html = (string) ob_get_clean();
+                        require_once dirname(__DIR__) . '/vendor/autoload.php';
+                        $options = new Dompdf\Options();
+                        $options->set('isRemoteEnabled', false);
+                        $options->set('isPhpEnabled', false);
+                        $options->set('defaultFont', 'DejaVu Sans');
+                        $dompdf = new Dompdf\Dompdf($options);
+                        $dompdf->loadHtml($html, 'UTF-8');
+                        $dompdf->setPaper('A4', 'landscape');
+                        $dompdf->render();
+                        $pdfBytes = $dompdf->output();
+                        StaffService::recordReportExport($database, $user, $_POST, count($report['rows']));
+                        while (ob_get_level() > 0) ob_end_clean();
+                        header('Content-Type: application/pdf');
+                        header('Content-Length: ' . strlen($pdfBytes));
+                        header('Content-Disposition: attachment; filename="admitflow-report-' . date('Y-m-d') . '.pdf"');
+                        echo $pdfBytes;
+                        exit;
+                    } catch (DomainException $error) {
+                        if (ob_get_level() > 0) ob_end_clean();
+                        http_response_code(422);
+                        header('Content-Type: text/plain; charset=utf-8');
+                        exit($error->getMessage());
+                    } catch (Throwable $error) {
+                        if (ob_get_level() > 0) ob_end_clean();
+                        error_log('[admitflow report PDF] Export failed (' . $error::class . ').');
+                        http_response_code(500);
+                        header('Content-Type: text/plain; charset=utf-8');
+                        exit('The report PDF could not be prepared.');
+                    }
                 }
                 if ($path === '/staff/audit.csv') {
                     $user = current_user();
@@ -715,18 +828,17 @@ try {
                     $database->rollBack();
                 }
                 flash('warning', $error->getMessage());
-                if ($path === '/staff/program/save' && (int) ($_POST['program_id'] ?? 0) < 1) {
-                    $_SESSION['academic_create_form_type'] = 'program';
-                } elseif ($path === '/staff/year/save' && (int) ($_POST['year_id'] ?? 0) < 1) {
-                    $_SESSION['academic_create_form_type'] = 'year';
-                } elseif ($path === '/staff/requirement/save' && (int) ($_POST['requirement_id'] ?? 0) < 1) {
-                    $_SESSION['academic_create_form_type'] = 'requirement';
-                } elseif ($path === '/staff/user/save' && (int) ($_POST['user_id'] ?? 0) < 1) {
+                if ($path === '/staff/user/save' && (int) ($_POST['user_id'] ?? 0) < 1) {
                     $_SESSION['staff_create_form_open'] = true;
                     $_SESSION['staff_create_form_values'] = array_intersect_key($_POST, array_flip(['full_name', 'email', 'role']));
                 }
-                if (isset($_SESSION['academic_create_form_type'])) {
-                    $_SESSION['academic_create_form_values'] = array_intersect_key($_POST, array_flip(['code', 'name', 'label', 'starts_on', 'ends_on', 'application_deadline', 'is_open', 'allowed_extensions', 'max_file_size_bytes', 'academic_program_id', 'academic_year_id', 'instructions', 'is_required', 'is_active']));
+                if (in_array($path, ['/staff/program/save', '/staff/year/save', '/staff/requirement/save'], true)) {
+                    $_SESSION['academic_create_form_type'] = match ($path) {
+                        '/staff/year/save' => 'year',
+                        '/staff/requirement/save' => 'requirement',
+                        default => 'program',
+                    };
+                    $_SESSION['academic_create_form_values'] = array_intersect_key($_POST, array_flip(['program_id', 'year_id', 'requirement_id', 'code', 'name', 'description', 'label', 'starts_on', 'ends_on', 'application_deadline', 'is_open', 'allowed_extensions', 'max_file_size_bytes', 'academic_program_id', 'academic_year_id', 'instructions', 'is_required', 'is_active']));
                     $_SESSION['academic_create_form_error'] = $error->getMessage();
                 }
                 if (in_array($path, ['/staff/announcement/save', '/staff/announcement/delete'], true)) {
@@ -741,13 +853,25 @@ try {
                     redirect('/staff/announcements');
                 }
                 if ($path === '/staff/academic-setting/delete') {
-                    redirect('/staff/settings' . (($_POST['setting_type'] ?? '') === 'requirement' ? '#requirements' : (($_POST['setting_type'] ?? '') === 'year' ? '#year-settings' : '#program-settings')));
+                    redirect(match ((string) ($_POST['setting_type'] ?? '')) {
+                        'requirement' => '/staff/academic/requirements',
+                        'year' => '/staff/academic/years',
+                        default => '/staff/academic/programs',
+                    });
                 }
                 if (in_array($path, ['/staff/program/save', '/staff/year/save', '/staff/requirement/save'], true)) {
-                    redirect('/staff/settings');
+                    redirect(match ($path) {
+                        '/staff/year/save' => '/staff/academic/years',
+                        '/staff/requirement/save' => '/staff/academic/requirements',
+                        default => '/staff/academic/programs',
+                    });
                 }
                 if ($path === '/staff/user/save') {
-                    redirect('/staff/users');
+                    redirect(match ((string) ($_POST['role'] ?? 'reviewer')) {
+                        'admin' => '/staff/users/administrators',
+                        'student' => '/staff/users/students',
+                        default => '/staff/users/staff',
+                    });
                 }
                 if ($path === '/staff/backup/restore') {
                     redirect('/staff/backups');
@@ -1235,7 +1359,7 @@ try {
             exit;
         }
         try {
-            $application = StaffService::detail($database, $user, (int) $match[1], false, $_GET);
+            $application = StaffService::detail($database, $user, (int) $match[1], false, [], true);
         } catch (DomainException $error) {
             http_response_code(422);
             render_page('errors/not-ready', ['title' => 'Check application history filters', 'message' => $error->getMessage()]);
@@ -1329,11 +1453,20 @@ try {
             exit;
         }
         $auditPage = StaffService::auditLog($database, $_GET);
-        render_page('staff/audit', ['title' => 'Audit log', 'user' => $user, 'events' => $auditPage['rows'], 'pagination' => $auditPage['pagination'], 'filters' => $auditPage['filters']]);
+        render_page('staff/audit', ['title' => 'Audit Log', 'user' => $user, 'events' => $auditPage['rows'], 'pagination' => $auditPage['pagination'], 'filters' => $auditPage['filters'], 'auditSummary' => $auditPage['summary']]);
         exit;
     }
 
     if ($path === '/staff/settings') {
+        redirect('/staff/academic/programs');
+    }
+
+    $academicPageScopes = [
+        '/staff/academic/programs' => 'programs',
+        '/staff/academic/years' => 'years',
+        '/staff/academic/requirements' => 'requirements',
+    ];
+    if (isset($academicPageScopes[$path])) {
         $user = current_user();
         if ($user === null) {
             redirect('/login');
@@ -1344,7 +1477,7 @@ try {
             exit;
         }
         try {
-            $settingsLists = StaffService::academicSettings($database, $user, $_GET);
+            $settingsLists = StaffService::academicSettings($database, $user, $_GET, $academicPageScopes[$path]);
         } catch (DomainException $error) {
             http_response_code(422);
             render_page('errors/not-ready', ['title' => 'Check academic setting filters', 'message' => $error->getMessage()]);
@@ -1354,7 +1487,8 @@ try {
         $createFormValues = is_array($_SESSION['academic_create_form_values'] ?? null) ? $_SESSION['academic_create_form_values'] : [];
         $createFormError = (string) ($_SESSION['academic_create_form_error'] ?? '');
         unset($_SESSION['academic_create_form_type'], $_SESSION['academic_create_form_values'], $_SESSION['academic_create_form_error']);
-        render_page('staff/settings', ['title' => 'Academic settings', 'user' => $user, 'createFormType' => $createFormType, 'createFormValues' => $createFormValues, 'createFormError' => $createFormError] + $settingsLists);
+        $academicPageTitles = ['programs' => 'Programs', 'years' => 'Academic Years', 'requirements' => 'Requirements'];
+        render_page('staff/academic-management', ['title' => $academicPageTitles[$academicPageScopes[$path]], 'user' => $user, 'managementType' => $academicPageScopes[$path], 'createFormType' => $createFormType, 'createFormValues' => $createFormValues, 'createFormError' => $createFormError] + $settingsLists);
         exit;
     }
 
@@ -1385,6 +1519,15 @@ try {
     }
 
     if ($path === '/staff/users') {
+        redirect('/staff/users/administrators');
+    }
+
+    $userPageRoles = [
+        '/staff/users/administrators' => 'admin',
+        '/staff/users/staff' => 'reviewer',
+        '/staff/users/students' => 'student',
+    ];
+    if (isset($userPageRoles[$path])) {
         $user = current_user();
         if ($user === null) {
             redirect('/login');
@@ -1397,13 +1540,14 @@ try {
         $accountsByRole = ['admin' => [], 'reviewer' => [], 'student' => []];
         $paginationByRole = [];
         $accountTotals = ['admin' => 0, 'reviewer' => 0, 'student' => 0];
-        $roleFilter = (string) ($_GET['role'] ?? '');
-        if (!in_array($roleFilter, ['', 'admin', 'reviewer', 'student'], true)) {
-            $roleFilter = '';
-        }
+        $roleFilter = $userPageRoles[$path];
         $statusFilter = (string) ($_GET['account_status'] ?? '');
         if (!in_array($statusFilter, ['', 'active', 'inactive', 'locked'], true)) {
             $statusFilter = '';
+        }
+        $applicationStatusFilter = (string) ($_GET['application_status'] ?? '');
+        if ($roleFilter !== 'student' || !in_array($applicationStatusFilter, ['', 'draft', 'submitted', 'in_screening', 'documents_incomplete', 'interview_scheduled', 'accepted', 'declined', 'enrolled'], true)) {
+            $applicationStatusFilter = '';
         }
         $searchFilter = trim((string) ($_GET['q'] ?? ''));
         if (mb_strlen($searchFilter) > 160) {
@@ -1432,14 +1576,18 @@ try {
             exit;
         }
         if ($startDateFilter !== '' || $endDateFilter !== '') $dateRangeFilter = $dateRangeFilter ?: 'custom';
-        $userFilters = ['role' => $roleFilter, 'account_status' => $statusFilter, 'q' => $searchFilter, 'start_date' => $startDateFilter, 'end_date' => $endDateFilter, 'date_range' => $dateRangeFilter];
-        $rolesToLoad = $roleFilter === '' ? ['admin', 'reviewer', 'student'] : [$roleFilter];
+        $userFilters = ['role' => $roleFilter, 'account_status' => $statusFilter, 'application_status' => $applicationStatusFilter, 'q' => $searchFilter, 'start_date' => $startDateFilter, 'end_date' => $endDateFilter, 'date_range' => $dateRangeFilter];
+        $rolesToLoad = [$roleFilter];
         foreach ($rolesToLoad as $accountRole) {
             $where = ['role = :role'];
             $parameters = ['role' => $accountRole];
             if ($statusFilter !== '') {
                 $where[] = 'account_status = :account_status';
                 $parameters['account_status'] = $statusFilter;
+            }
+            if ($accountRole === 'student' && $applicationStatusFilter !== '') {
+                $where[] = 'EXISTS (SELECT 1 FROM applications app_filter WHERE app_filter.student_id = users.id AND app_filter.deleted_at IS NULL AND app_filter.status = :application_status)';
+                $parameters['application_status'] = $applicationStatusFilter;
             }
             if ($searchFilter !== '') {
                 $where[] = '(full_name LIKE :search_name OR email LIKE :search_email)';
@@ -1460,25 +1608,29 @@ try {
             $accountTotals[$accountRole] = (int) $countUsers->fetchColumn();
             $pageKey = 'page_' . $accountRole;
             $pagination = Pagination::make($accountTotals[$accountRole], $_GET, $pageKey, 'per_page', 20);
-            $query = $database->prepare('SELECT id, full_name, email, role, account_status, last_login_at, created_at FROM users WHERE ' . $whereSql . ' ORDER BY created_at DESC, id DESC LIMIT ' . $pagination['page_size'] . ' OFFSET ' . $pagination['offset']);
+            $applicationStatusSelect = $accountRole === 'student' ? ', (SELECT app.status FROM applications app WHERE app.student_id = users.id AND app.deleted_at IS NULL ORDER BY app.updated_at DESC, app.id DESC LIMIT 1) AS application_status, (SELECT app.reference_number FROM applications app WHERE app.student_id = users.id AND app.deleted_at IS NULL ORDER BY app.updated_at DESC, app.id DESC LIMIT 1) AS applicant_id, (SELECT app.id FROM applications app WHERE app.student_id = users.id AND app.deleted_at IS NULL AND app.status <> \'draft\' ORDER BY app.updated_at DESC, app.id DESC LIMIT 1) AS reviewable_application_id, profile.mobile_number, profile.date_of_birth, profile.address_line, profile.municipality, profile.province' : '';
+            $profileJoin = $accountRole === 'student' ? ' LEFT JOIN student_profiles profile ON profile.user_id = users.id' : '';
+            $query = $database->prepare('SELECT id, full_name, email, role, account_status, last_login_at, created_at' . $applicationStatusSelect . ' FROM users' . $profileJoin . ' WHERE ' . $whereSql . ' ORDER BY created_at DESC, id DESC LIMIT ' . $pagination['page_size'] . ' OFFSET ' . $pagination['offset']);
             $query->execute($parameters);
             $accountsByRole[$accountRole] = $query->fetchAll();
             $pagination['page_key'] = $pageKey;
-            $pagination['base_url'] = '/staff/users';
+            $pagination['base_url'] = $path;
             $pagination['query'] = $userFilters + ['per_page' => $pagination['page_size']];
             $paginationByRole[$accountRole] = $pagination;
         }
-        $userCategories = array_values(array_filter([
+        $allUserCategories = [
             ['key' => 'admin', 'id' => 'admin-accounts', 'title' => 'Administrator accounts'],
             ['key' => 'reviewer', 'id' => 'staff-accounts', 'title' => 'Staff accounts'],
             ['key' => 'student', 'id' => 'student-accounts', 'title' => 'Student accounts'],
-        ], static fn (array $category): bool => $roleFilter === '' || $category['key'] === $roleFilter));
+        ];
+        $userCategories = array_values(array_filter($allUserCategories, static fn (array $category): bool => $category['key'] === $roleFilter));
         $staffSetupLink = $_SESSION['staff_setup_link'] ?? null;
         $staffCreateFormOpen = !empty($_SESSION['staff_create_form_open']);
         $staffCreateFormValues = is_array($_SESSION['staff_create_form_values'] ?? null) ? $_SESSION['staff_create_form_values'] : [];
         unset($_SESSION['staff_create_form_open'], $_SESSION['staff_create_form_values']);
         unset($_SESSION['staff_setup_link']);
-        render_page('staff/users', ['title' => 'User administration', 'user' => $user, 'accountsByRole' => $accountsByRole, 'accountTotals' => $accountTotals, 'userCategories' => $userCategories, 'paginationByRole' => $paginationByRole, 'userFilters' => $userFilters, 'staffSetupLink' => $staffSetupLink, 'staffCreateFormOpen' => $staffCreateFormOpen, 'staffCreateFormValues' => $staffCreateFormValues]);
+        $userPageTitles = ['admin' => 'Administrator Accounts', 'reviewer' => 'Staff Accounts', 'student' => 'Student Accounts'];
+        render_page('staff/users', ['title' => $userPageTitles[$roleFilter], 'user' => $user, 'accountCategory' => $roleFilter, 'accountsByRole' => $accountsByRole, 'accountTotals' => $accountTotals, 'userCategories' => $userCategories, 'paginationByRole' => $paginationByRole, 'userFilters' => $userFilters, 'staffSetupLink' => $staffSetupLink, 'staffCreateFormOpen' => $staffCreateFormOpen, 'staffCreateFormValues' => $staffCreateFormValues]);
         exit;
     }
 
@@ -1499,7 +1651,8 @@ try {
             render_page('errors/not-ready', ['title' => 'Check backup filters', 'message' => $error->getMessage()]);
             exit;
         }
-        render_page('staff/backups', ['title' => 'Backups and restore', 'user' => $user, 'backups' => $backupPage['rows'], 'pagination' => $backupPage['pagination'], 'backupFilters' => $backupPage['filters'], 'restoreInstructions' => BackupService::safeRestoreInstructions()]);
+        $automatedBackupRuns = AutomatedBackupRunner::recentHistory(dirname(__DIR__) . '/storage/logs/automated-backup-history.jsonl');
+        render_page('staff/backups', ['title' => 'Backups and restore', 'user' => $user, 'backups' => $backupPage['rows'], 'pagination' => $backupPage['pagination'], 'backupFilters' => $backupPage['filters'], 'restoreInstructions' => BackupService::safeRestoreInstructions(), 'automatedBackupRuns' => $automatedBackupRuns]);
         exit;
     }
 
@@ -1534,7 +1687,8 @@ try {
     if (isset($database) && $database->inTransaction()) {
         $database->rollBack();
     }
-    error_log('[admitflow] request failed (' . $error::class . ').');
+    $diagnosticMessage = preg_replace('/\b(password|passwd|token|secret|credential|csrf|session|authorization|cookie)\b\s*([=:])\s*(?:"[^"]*"|\'[^\']*\'|[^\s,;]+)/i', '$1$2[redacted]', $error->getMessage()) ?? '[message unavailable]';
+    error_log('[admitflow] request failed (' . $error::class . ') at ' . basename($error->getFile()) . ':' . $error->getLine() . ': ' . mb_substr($diagnosticMessage, 0, 1000));
     http_response_code(500);
     render_page('errors/server-error', ['title' => 'Something went wrong']);
 }

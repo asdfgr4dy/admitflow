@@ -10,6 +10,8 @@ require dirname(__DIR__) . '/app/PasswordResetService.php';
 require dirname(__DIR__) . '/app/AuthService.php';
 require dirname(__DIR__) . '/app/BackupIntegrity.php';
 require dirname(__DIR__) . '/app/BackupService.php';
+require dirname(__DIR__) . '/app/AutomatedBackupRunner.php';
+require dirname(__DIR__) . '/app/BackupRunnerPreflight.php';
 require dirname(__DIR__) . '/app/ApplicationService.php';
 require dirname(__DIR__) . '/app/AnnouncementService.php';
 require dirname(__DIR__) . '/app/Pagination.php';
@@ -104,6 +106,56 @@ $diagnosticFixturePath = $restoreTempRoot . DIRECTORY_SEPARATOR . 'backup-diagno
 BackupService::logRequestEvent(['request_id' => '0123456789abcdef01234567', 'type' => 'files', 'stage' => 'metadata-insert', 'event' => 'failed', 'elapsed_seconds' => 17, 'exception_class' => 'PDOException', 'output_path' => 'C:\\private\\upload.pdf', 'message' => 'synthetic-secret'], $diagnosticFixturePath);
 $diagnosticFixture = json_decode((string) file_get_contents($diagnosticFixturePath), true);
 $assert(is_array($diagnosticFixture) && $diagnosticFixture['request_id'] === '0123456789abcdef01234567' && $diagnosticFixture['stage'] === 'metadata-insert' && $diagnosticFixture['type'] === 'files' && !isset($diagnosticFixture['output_path']) && !isset($diagnosticFixture['message']), 'backup diagnostic log stores correlation/stage fields only and excludes arbitrary paths and messages');
+$runnerConfiguration = ['host' => '127.0.0.1', 'port' => '3306', 'database' => 'admitflow', 'username' => 'fixture_backup_user', 'password' => 'fixture-backup-password', 'charset' => 'utf8mb4'];
+$runnerEnvironment = ['ADMITFLOW_APP_ENV' => 'test', 'ADMITFLOW_BACKUP_RUNNER_ENABLED' => '1', 'ADMITFLOW_BACKUP_APPROVED_DATABASE' => 'admitflow'];
+$runnerConfigurationAccepted = true;
+try { BackupRunnerPreflight::validateRunnerConfiguration($runnerConfiguration, $runnerEnvironment, dirname(__DIR__)); } catch (Throwable) { $runnerConfigurationAccepted = false; }
+$runnerWrongRootRejected = false;
+try { BackupRunnerPreflight::validateRunnerConfiguration($runnerConfiguration, $runnerEnvironment, dirname(__DIR__) . '-other'); } catch (DomainException) { $runnerWrongRootRejected = true; }
+$runnerApprovalMismatchRejected = false;
+try { $wrongApproval = $runnerEnvironment; $wrongApproval['ADMITFLOW_BACKUP_APPROVED_DATABASE'] = 'admitflow_restore_test'; BackupRunnerPreflight::validateRunnerConfiguration($runnerConfiguration, $wrongApproval, dirname(__DIR__)); } catch (DomainException) { $runnerApprovalMismatchRejected = true; }
+$runnerOptInRequired = false;
+try { $noRunnerOptIn = $runnerEnvironment; unset($noRunnerOptIn['ADMITFLOW_BACKUP_RUNNER_ENABLED']); BackupRunnerPreflight::validateRunnerConfiguration($runnerConfiguration, $noRunnerOptIn, dirname(__DIR__)); } catch (DomainException) { $runnerOptInRequired = true; }
+$runnerGrantFixture = ["GRANT USAGE ON *.* TO 'fixture_backup_user'@'localhost'", "GRANT SELECT, SHOW VIEW, TRIGGER ON `admitflow`.* TO 'fixture_backup_user'@'localhost'", "GRANT INSERT ON `admitflow`.`backups` TO 'fixture_backup_user'@'localhost'", "GRANT INSERT ON `admitflow`.`audit_logs` TO 'fixture_backup_user'@'localhost'"];
+$runnerGrantPolicyAccepted = true;
+try { BackupRunnerPreflight::validateGrants($runnerGrantFixture, 'admitflow'); } catch (Throwable) { $runnerGrantPolicyAccepted = false; }
+$runnerAllPrivilegeRejected = false;
+try { BackupRunnerPreflight::validateGrants(["GRANT USAGE ON *.* TO 'fixture_backup_user'@'localhost'", "GRANT ALL PRIVILEGES ON `admitflow`.* TO 'fixture_backup_user'@'localhost'"], 'admitflow'); } catch (DomainException) { $runnerAllPrivilegeRejected = true; }
+$runnerSystemSchemaGrantRejected = false;
+try { BackupRunnerPreflight::validateGrants(array_merge($runnerGrantFixture, ["GRANT SELECT ON `mysql`.* TO 'fixture_backup_user'@'localhost'"]), 'admitflow'); } catch (DomainException) { $runnerSystemSchemaGrantRejected = true; }
+$runnerUnexpectedInsertRejected = false;
+try { BackupRunnerPreflight::validateGrants(array_merge($runnerGrantFixture, ["GRANT INSERT ON `admitflow`.`users` TO 'fixture_backup_user'@'localhost'"]), 'admitflow'); } catch (DomainException) { $runnerUnexpectedInsertRejected = true; }
+$assert($runnerConfigurationAccepted && $runnerWrongRootRejected && $runnerApprovalMismatchRejected && $runnerOptInRequired, 'backup-runner preflight requires exact canonical root, explicit database approval, and opt-in');
+$assert($runnerGrantPolicyAccepted && $runnerAllPrivilegeRejected && $runnerSystemSchemaGrantRejected && $runnerUnexpectedInsertRejected, 'backup grant policy accepts only required schema reads and inventory inserts and rejects broad, system-schema, and unexpected table privileges');
+
+$runnerRoot = sys_get_temp_dir() . DIRECTORY_SEPARATOR . 'admitflow backup runner ' . bin2hex(random_bytes(6));
+$runnerLockPath = $runnerRoot . DIRECTORY_SEPARATOR . 'locks' . DIRECTORY_SEPARATOR . 'backup.lock';
+$runnerHistoryPath = $runnerRoot . DIRECTORY_SEPARATOR . 'logs' . DIRECTORY_SEPARATOR . 'history.jsonl';
+$runnerDatabase = new PDO('sqlite::memory:', null, null, [PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION, PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC]);
+$runnerDatabase->exec('CREATE TABLE users (id INTEGER PRIMARY KEY, full_name TEXT, role TEXT, account_status TEXT)');
+$runnerDatabase->exec('CREATE TABLE backups (id INTEGER PRIMARY KEY, backup_type TEXT, file_size_bytes INTEGER, sha256 TEXT, verification_status TEXT, created_at TEXT)');
+$runnerDatabase->exec("INSERT INTO users VALUES (9, 'Runner Administrator', 'admin', 'active')");
+$dailyDatabaseCalls = 0;
+$dailyFileCalls = 0;
+$dailyRun = AutomatedBackupRunner::execute('daily', 'scheduled', $runnerLockPath, $runnerHistoryPath, static fn (): PDO => $runnerDatabase, static function (PDO $database, array $actor) use (&$dailyDatabaseCalls): int { $dailyDatabaseCalls++; $database->exec("INSERT INTO backups VALUES (41, 'database', 1234, '" . str_repeat('a', 64) . "', 'verified', '2026-10-30 00:00:00')"); return 41; }, static function (PDO $database, array $actor) use (&$dailyFileCalls): int { $dailyFileCalls++; $database->exec("INSERT INTO backups VALUES (42, 'files', 5678, '" . str_repeat('b', 64) . "', 'verified', '2026-10-30 00:00:00')"); return 42; }, str_repeat('a', 32));
+$dailyHistory = array_map(static fn (string $line): array => json_decode($line, true), file($runnerHistoryPath, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES));
+$dailyCompletion = $dailyHistory[count($dailyHistory) - 1] ?? [];
+$assert($dailyRun['exit_code'] === AutomatedBackupRunner::EXIT_SUCCESS && $dailyDatabaseCalls === 1 && $dailyFileCalls === 1 && $dailyCompletion['schedule'] === 'daily' && $dailyCompletion['source'] === 'scheduled' && $dailyCompletion['result'] === 'success' && $dailyCompletion['components']['database']['backup']['file_size_bytes'] === 1234 && $dailyCompletion['components']['files']['backup']['sha256'] === str_repeat('b', 64) && isset($dailyCompletion['started_at'], $dailyCompletion['completed_at'], $dailyCompletion['duration_ms']), 'daily CLI coordinator runs database and file components and records linked backup metadata, timing, and outcome');
+$weeklyRun = AutomatedBackupRunner::execute('weekly', 'manual', $runnerLockPath, $runnerHistoryPath, static fn (): PDO => $runnerDatabase, static function (): int { throw new RuntimeException('synthetic-secret'); }, static function (PDO $database): int { $database->exec("INSERT INTO backups VALUES (44, 'files', 90, '" . str_repeat('c', 64) . "', 'verified', '2026-10-30 00:00:00')"); return 44; }, str_repeat('b', 32));
+$weeklyHistory = file_get_contents($runnerHistoryPath);
+$weeklyCompletion = json_decode((string) file($runnerHistoryPath, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES)[3], true);
+$recentRunnerHistory = AutomatedBackupRunner::recentHistory($runnerHistoryPath);
+$assert($weeklyRun['exit_code'] === AutomatedBackupRunner::EXIT_BACKUP_FAILURE && $weeklyCompletion['schedule'] === 'weekly' && $weeklyCompletion['result'] === 'failed' && $weeklyCompletion['components']['database']['status'] === 'failed' && $weeklyCompletion['components']['files']['status'] === 'success' && !str_contains((string) $weeklyHistory, 'synthetic-secret') && ($recentRunnerHistory[0]['execution_id'] ?? '') === str_repeat('b', 32), 'weekly checkpoint reports partial component failure without logging exception messages or claiming success and is visible in recent history');
+$heldRunnerLock = fopen($runnerLockPath, 'c+b');
+$runnerLockHeld = is_resource($heldRunnerLock) && flock($heldRunnerLock, LOCK_EX | LOCK_NB);
+$lockedCallbackCalls = 0;
+$lockedRun = AutomatedBackupRunner::execute('daily', 'scheduled', $runnerLockPath, $runnerHistoryPath, static function () use (&$lockedCallbackCalls): PDO { $lockedCallbackCalls++; return $runnerDatabase; }, static fn (): int => 1, static fn (): int => 2, str_repeat('c', 32));
+if ($runnerLockHeld) { flock($heldRunnerLock, LOCK_UN); fclose($heldRunnerLock); }
+$assert($runnerLockHeld && $lockedRun['exit_code'] === AutomatedBackupRunner::EXIT_LOCKED && $lockedCallbackCalls === 0, 'overlapping backup execution is refused before connecting to the database');
+$releasedLockRun = AutomatedBackupRunner::execute('daily', 'manual', $runnerLockPath, $runnerHistoryPath, static fn (): PDO => $runnerDatabase, static fn (): int => 51, static fn (): int => 52, str_repeat('d', 32));
+$runnerSource = file_get_contents(dirname(__DIR__) . '/scripts/backup-runner.php');
+$powershellRunnerSource = file_get_contents(dirname(__DIR__) . '/scripts/run-backup.ps1');
+$assert($releasedLockRun['exit_code'] === AutomatedBackupRunner::EXIT_SUCCESS && is_string($runnerSource) && str_contains($runnerSource, "PHP_SAPI !== 'cli'") && str_contains($runnerSource, 'BackupRunnerPreflight::validateRunnerConfiguration') && str_contains($runnerSource, 'BackupRunnerPreflight::verifyConnection') && is_string($powershellRunnerSource) && str_contains($powershellRunnerSource, '& $phpExecutable $runnerPath'), 'failed or skipped runs release the lock and CLI entry points enforce preflight, identity/grant checks, and argument-safe Windows paths');
 $restoreDb = new PDO('sqlite::memory:', null, null, [PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION, PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC]);
 $restoreDb->exec('CREATE TABLE users (id INTEGER PRIMARY KEY, full_name TEXT NOT NULL)');
 $restoreDb->exec('CREATE TABLE backups (id INTEGER PRIMARY KEY AUTOINCREMENT, backup_type TEXT, storage_name TEXT UNIQUE, file_size_bytes INTEGER, sha256 TEXT, verification_status TEXT, created_by INTEGER NULL, created_at TEXT DEFAULT CURRENT_TIMESTAMP, verified_at TEXT NULL, failure_message TEXT NULL)');
@@ -127,6 +179,111 @@ $databaseBackupId = BackupService::createDatabase($restoreDb, $restoreActor, sta
 $databaseBackupRow = $restoreDb->query('SELECT storage_name, file_size_bytes, sha256, verification_status FROM backups WHERE id=' . $databaseBackupId)->fetch();
 $databaseBackupFile = $restoreTempRoot . DIRECTORY_SEPARATOR . $databaseBackupRow['storage_name'];
 $assert($databaseBackupRow['verification_status'] === 'verified' && (int) $databaseBackupRow['file_size_bytes'] === filesize($databaseBackupFile) && hash_equals($databaseBackupRow['sha256'], hash_file('sha256', $databaseBackupFile)), 'isolated database backup creation records unique storage, size, SHA-256, and verified structure');
+$assert(BackupIntegrity::databaseDumpTargetsOnlySchema($databaseBackupFile, 'admitflow_restore_test'), 'ordinary dump fixture is accepted for its selected schema');
+$sqlSafetyFixture = $restoreTempRoot . DIRECTORY_SEPARATOR . 'sql-safety-fixture.sql';
+file_put_contents($sqlSafetyFixture, "-- comment: USE otherdb;\nINSERT INTO `users` VALUES ('CREATE DATABASE hidden');\n");
+$quotedDangerAccepted = BackupIntegrity::databaseDumpTargetsOnlySchema($sqlSafetyFixture, 'admitflow_restore_test');
+file_put_contents($sqlSafetyFixture, "/*!50000 USE otherdb */;\n");
+$executableUseRejected = !BackupIntegrity::databaseDumpTargetsOnlySchema($sqlSafetyFixture, 'admitflow_restore_test');
+file_put_contents($sqlSafetyFixture, "DELIMITER //\nUSE otherdb//\n");
+$alternateDelimiterUseRejected = !BackupIntegrity::databaseDumpTargetsOnlySchema($sqlSafetyFixture, 'admitflow_restore_test');
+file_put_contents($sqlSafetyFixture, "CREATE DATABASE otherdb;\n");
+$createDatabaseRejected = !BackupIntegrity::databaseDumpTargetsOnlySchema($sqlSafetyFixture, 'admitflow_restore_test');
+file_put_contents($sqlSafetyFixture, "DROP SCHEMA otherdb;\n");
+$dropSchemaRejected = !BackupIntegrity::databaseDumpTargetsOnlySchema($sqlSafetyFixture, 'admitflow_restore_test');
+file_put_contents($sqlSafetyFixture, "INSERT INTO otherdb.users VALUES (1);\n");
+$qualifiedSchemaRejected = !BackupIntegrity::databaseDumpTargetsOnlySchema($sqlSafetyFixture, 'admitflow_restore_test');
+file_put_contents($sqlSafetyFixture, "RENAME TABLE `admitflow_restore_test`.`users` TO `otherdb`.`users`;\n");
+$renameTargetRejected = !BackupIntegrity::databaseDumpTargetsOnlySchema($sqlSafetyFixture, 'admitflow_restore_test');
+file_put_contents($sqlSafetyFixture, "LOCK TABLES `admitflow_restore_test`.`users` WRITE, `otherdb`.`users` WRITE;\n");
+$tableListTargetRejected = !BackupIntegrity::databaseDumpTargetsOnlySchema($sqlSafetyFixture, 'admitflow_restore_test');
+file_put_contents($sqlSafetyFixture, "INSERT INTO `admitflow_restore_test`.`users` VALUES (1);\n");
+$targetQualifiedAccepted = BackupIntegrity::databaseDumpTargetsOnlySchema($sqlSafetyFixture, 'admitflow_restore_test');
+$assert($quotedDangerAccepted && $executableUseRejected && $alternateDelimiterUseRejected && $createDatabaseRejected && $dropSchemaRejected && $qualifiedSchemaRejected && $renameTargetRejected && $tableListTargetRejected && $targetQualifiedAccepted, 'SQL scanner ignores comments/string literals, scans executable comments and alternate delimiters, rejects schema switching and foreign-schema DDL/references/table-list targets, and accepts target-qualified references');
+$identityMatchAccepted = true;
+try {
+    BackupService::validateRestoreTargetIdentities('admitflow_restore_test', 'admitflow_test@localhost', 'admitflow_restore_test', 'admitflow_test@localhost', 'admitflow_restore_test', 'admitflow_test', 'admitflow_restore_test');
+} catch (RuntimeException) {
+    $identityMatchAccepted = false;
+}
+$destinationMismatchRejected = false;
+$approvalMissingRejected = false;
+$identityUnavailableRejected = false;
+$accountHostMismatchRejected = false;
+try {
+    BackupService::validateRestoreTargetIdentities('admitflow', 'admitflow_test@localhost', 'admitflow_restore_test', 'admitflow_test@localhost', 'admitflow_restore_test', 'admitflow_test', 'admitflow_restore_test');
+} catch (RuntimeException) {
+    $destinationMismatchRejected = true;
+}
+try {
+    BackupService::validateRestoreTargetIdentities('admitflow_restore_test', 'admitflow_test@localhost', 'admitflow_restore_test', 'admitflow_test@localhost', 'admitflow_restore_test', 'admitflow_test', '');
+} catch (RuntimeException) {
+    $approvalMissingRejected = true;
+}
+try {
+    BackupService::validateRestoreTargetIdentities('', 'admitflow_test@localhost', 'admitflow_restore_test', 'admitflow_test@localhost', 'admitflow_restore_test', 'admitflow_test', 'admitflow_restore_test');
+} catch (RuntimeException) {
+    $identityUnavailableRejected = true;
+}
+try {
+    BackupService::validateRestoreTargetIdentities('admitflow_restore_test', 'admitflow_test@localhost', 'admitflow_restore_test', 'admitflow_test@127.0.0.1', 'admitflow_restore_test', 'admitflow_test', 'admitflow_restore_test');
+} catch (RuntimeException) {
+    $accountHostMismatchRejected = true;
+}
+$validRestoreGrantLines = [
+    "GRANT USAGE ON *.* TO 'admitflow_test'@'localhost'",
+    "GRANT SELECT, SHOW VIEW, TRIGGER, CREATE, DROP, ALTER, LOCK TABLES ON `admitflow_restore_test`.* TO 'admitflow_test'@'localhost'",
+    "GRANT INSERT ON `admitflow_restore_test`.`audit_logs` TO 'admitflow_test'@'localhost'",
+    "GRANT INSERT ON `admitflow_restore_test`.`backups` TO 'admitflow_test'@'localhost'",
+    "GRANT INSERT ON `admitflow_restore_test`.`login_attempts` TO 'admitflow_test'@'localhost'",
+    "GRANT INSERT ON `admitflow_restore_test`.`system_settings` TO 'admitflow_test'@'localhost'",
+    "GRANT INSERT ON `admitflow_restore_test`.`users` TO 'admitflow_test'@'localhost'",
+];
+$scopedGrantsAccepted = true;
+try {
+    BackupService::validateRestoreGrants($validRestoreGrantLines, 'admitflow_restore_test');
+} catch (RuntimeException) {
+    $scopedGrantsAccepted = false;
+}
+$allRestorePrivilegesRejected = false;
+try {
+    BackupService::validateRestoreGrants(["GRANT USAGE ON *.* TO 'admitflow_test'@'localhost'", "GRANT ALL PRIVILEGES ON `admitflow_restore_test`.* TO 'admitflow_test'@'localhost'"], 'admitflow_restore_test');
+} catch (RuntimeException) {
+    $allRestorePrivilegesRejected = true;
+}
+$unexpectedRestoreSchemaPrivilegeRejected = false;
+try {
+    BackupService::validateRestoreGrants(array_merge($validRestoreGrantLines, ["GRANT DELETE ON `admitflow_restore_test`.* TO 'admitflow_test'@'localhost'"]), 'admitflow_restore_test');
+} catch (RuntimeException) {
+    $unexpectedRestoreSchemaPrivilegeRejected = true;
+}
+$unexpectedRestoreTableGrantRejected = false;
+try {
+    BackupService::validateRestoreGrants(array_merge($validRestoreGrantLines, ["GRANT INSERT ON `admitflow_restore_test`.`applications` TO 'admitflow_test'@'localhost'"]), 'admitflow_restore_test');
+} catch (RuntimeException) {
+    $unexpectedRestoreTableGrantRejected = true;
+}
+$globalGrantRejected = false;
+try {
+    BackupService::validateRestoreGrants(["GRANT SELECT ON *.* TO 'admitflow_test'@'localhost'"], 'admitflow_restore_test');
+} catch (RuntimeException) {
+    $globalGrantRejected = true;
+}
+$globalGrantOptionRejected = false;
+try {
+    BackupService::validateRestoreGrants(["GRANT USAGE ON *.* TO 'admitflow_test'@'localhost' WITH GRANT OPTION"], 'admitflow_restore_test');
+} catch (RuntimeException) {
+    $globalGrantOptionRejected = true;
+}
+$roleGrantRejected = false;
+try {
+    BackupService::validateRestoreGrants(["GRANT 'restore_role'@'%' TO 'admitflow_test'@'localhost'"], 'admitflow_restore_test');
+} catch (RuntimeException) {
+    $roleGrantRejected = true;
+}
+$assert($identityMatchAccepted && $destinationMismatchRejected && $approvalMissingRejected && $identityUnavailableRejected && $accountHostMismatchRejected && $scopedGrantsAccepted && $globalGrantRejected && $globalGrantOptionRejected && $roleGrantRejected && $allRestorePrivilegesRejected && $unexpectedRestoreSchemaPrivilegeRejected && $unexpectedRestoreTableGrantRejected, 'restore target policy requires matching explicitly approved identities and exact scoped grants, rejecting global, administrative, duplicate-scope, role, and unexpected table privileges');
+$restoreDumpSource = file_get_contents(dirname(__DIR__) . '/app/BackupService.php');
+$assert(is_string($restoreDumpSource) && !str_contains($restoreDumpSource, "'--routines'"), 'database dumps do not request stored routine or system-schema privileges');
 $backupFileCountBeforeFailures = count(glob($restoreTempRoot . DIRECTORY_SEPARATOR . 'database-*.sql') ?: []);
 $previousErrorLog = ini_get('error_log');
 $diagnosticLogPath = $restoreTempRoot . DIRECTORY_SEPARATOR . 'backup-diagnostics.log';
@@ -223,6 +380,37 @@ $safetyBackupCreator = static function (PDO $testDatabase, array $actor, string 
     $safetyCreatorCalls++;
     return BackupService::createDatabase($testDatabase, $actor, static function (string $target) use ($writeRestoreFixtureDump): int { $writeRestoreFixtureDump($target, 'safety'); return 0; }, $root);
 };
+$blockedRestoreExecutions = 0;
+$attemptRestore = static function (int $id, string $confirmation, ?callable $safetyCreator = null) use ($restoreDb, $restoreActor, $restoreTempRoot, &$blockedRestoreExecutions): bool {
+    try {
+        BackupService::restoreDatabase($restoreDb, $restoreActor, $id, $confirmation, static function () use (&$blockedRestoreExecutions): void { $blockedRestoreExecutions++; }, $safetyCreator, $restoreTempRoot);
+        return false;
+    } catch (Throwable) {
+        return true;
+    }
+};
+$missingRecordRejected = $attemptRestore(999999, 'RESTORE 999999', static fn (): int => 0);
+$missingFileName = 'database-20261029-120002-abcdef123458.sql';
+$restoreDb->prepare('INSERT INTO backups (backup_type, storage_name, file_size_bytes, sha256, verification_status, created_by) VALUES (\'database\', :name, 2048, :sha256, \'verified\', 9)')->execute(['name' => $missingFileName, 'sha256' => str_repeat('b', 64)]);
+$missingFileId = (int) $restoreDb->lastInsertId();
+$missingFileRejected = $attemptRestore($missingFileId, 'RESTORE ' . $missingFileId, static fn (): int => 0);
+$restoreDb->prepare('UPDATE backups SET verification_status = \'pending\' WHERE id = :id')->execute(['id' => $databaseBackupId]);
+$unverifiedBackupRejected = $attemptRestore($databaseBackupId, 'RESTORE ' . $databaseBackupId, static fn (): int => 0);
+$restoreDb->prepare('UPDATE backups SET verification_status = \'verified\' WHERE id = :id')->execute(['id' => $databaseBackupId]);
+$unsafeDumpName = 'database-20261029-120003-abcdef123459.sql';
+$unsafeDumpPath = $restoreTempRoot . DIRECTORY_SEPARATOR . $unsafeDumpName;
+$writeRestoreFixtureDump($unsafeDumpPath, 'unsafe');
+file_put_contents($unsafeDumpPath, "USE another_schema;\n", FILE_APPEND);
+$restoreDb->prepare('INSERT INTO backups (backup_type, storage_name, file_size_bytes, sha256, verification_status, created_by) VALUES (\'database\', :name, :size, :sha256, \'verified\', 9)')->execute(['name' => $unsafeDumpName, 'size' => filesize($unsafeDumpPath), 'sha256' => hash_file('sha256', $unsafeDumpPath)]);
+$unsafeDumpId = (int) $restoreDb->lastInsertId();
+$unsafeDumpRejected = $attemptRestore($unsafeDumpId, 'RESTORE ' . $unsafeDumpId, static fn (): int => 0);
+$safetyCreationFailureRejected = $attemptRestore($databaseBackupId, 'RESTORE ' . $databaseBackupId, static fn (): int => 0);
+$safetyVerificationFailureRejected = $attemptRestore($databaseBackupId, 'RESTORE ' . $databaseBackupId, static function (PDO $testDatabase, array $actor, string $root) use ($writeRestoreFixtureDump): int {
+    $id = BackupService::createDatabase($testDatabase, $actor, static function (string $target) use ($writeRestoreFixtureDump): int { $writeRestoreFixtureDump($target, 'unverified-safety'); return 0; }, $root);
+    $testDatabase->prepare('UPDATE backups SET verification_status = \'failed\' WHERE id = :id')->execute(['id' => $id]);
+    return $id;
+});
+$assert($missingRecordRejected && $missingFileRejected && $unverifiedBackupRejected && $unsafeDumpRejected && $safetyCreationFailureRejected && $safetyVerificationFailureRejected && $blockedRestoreExecutions === 0, 'missing records/files, unverified or unsafe dumps, and missing/unverified safety backups all abort before importer invocation');
 $restoreExecutorCalls = 0;
 $simulatedRestoreExecutor = static function (string $path, PDO $testDatabase) use (&$restoreExecutorCalls): void {
     $restoreExecutorCalls++;
@@ -232,7 +420,7 @@ $simulatedRestoreExecutor = static function (string $path, PDO $testDatabase) us
 $safetyCreatorCalls = 0;
 $safetyBackupId = BackupService::restoreDatabase($restoreDb, $restoreActor, $databaseBackupId, 'RESTORE ' . $databaseBackupId, $simulatedRestoreExecutor, $safetyBackupCreator, $restoreTempRoot);
 $restoreAuditActions = $restoreDb->query("SELECT action FROM audit_logs WHERE action LIKE 'backup.restore_%' ORDER BY id")->fetchAll(PDO::FETCH_COLUMN);
-$assert($restoreExecutorCalls === 1 && $safetyCreatorCalls === 1 && $restoreDb->query('SELECT value FROM restore_fixture WHERE id=1')->fetchColumn() === 'after-restore' && (int) $restoreDb->query('SELECT COUNT(*) FROM backups WHERE id=' . $safetyBackupId . " AND verification_status='verified'")->fetchColumn() === 1 && $restoreAuditActions === ['backup.restored'] && (int) $restoreDb->query('SELECT COUNT(*) FROM backups WHERE storage_name = ' . $restoreDb->quote($databaseBackupRow['storage_name']))->fetchColumn() === 1, 'isolated restore creates verified safety backup first, applies disposable state, preserves both files in history, and records completion after import');
+$assert($restoreExecutorCalls === 1 && $safetyCreatorCalls === 1 && $restoreDb->query('SELECT value FROM restore_fixture WHERE id=1')->fetchColumn() === 'after-restore' && (int) $restoreDb->query('SELECT COUNT(*) FROM backups WHERE id=' . $safetyBackupId . " AND verification_status='verified'")->fetchColumn() === 1 && end($restoreAuditActions) === 'backup.restored' && count(array_filter($restoreAuditActions, static fn (string $action): bool => $action === 'backup.restored')) === 1 && (int) $restoreDb->query('SELECT COUNT(*) FROM backups WHERE storage_name = ' . $restoreDb->quote($databaseBackupRow['storage_name']))->fetchColumn() === 1, 'isolated restore creates verified safety backup first, applies disposable state, preserves both files in history, and records completion after import');
 $failedRestoreSafety = static function (PDO $testDatabase, array $actor, string $root) use ($writeRestoreFixtureDump): int {
     return BackupService::createDatabase($testDatabase, $actor, static function (string $target) use ($writeRestoreFixtureDump): int { $writeRestoreFixtureDump($target, 'failure-safety'); return 0; }, $root);
 };
@@ -254,9 +442,47 @@ $recoverySafetyCreator = static function (PDO $testDatabase, array $actor, strin
 };
 BackupService::restoreDatabase($restoreDb, $restoreActor, $safetyBackupId, 'RESTORE ' . $safetyBackupId, $recoveryExecutor, $recoverySafetyCreator, $restoreTempRoot);
 $assert($restoreDb->query('SELECT value FROM restore_fixture WHERE id=1')->fetchColumn() === 'recovered-from-safety', 'isolated recovery can explicitly restore from the retained safety backup');
-$fileProjectRoot = $restoreTempRoot . DIRECTORY_SEPARATOR . 'project-fixture';
+$recoveryFailureReported = false;
+try {
+    BackupService::restoreDatabase($restoreDb, $restoreActor, $safetyBackupId, 'RESTORE ' . $safetyBackupId, static function (string $path, PDO $testDatabase): void { $testDatabase->exec("UPDATE restore_fixture SET value='recovery-partial' WHERE id=1"); throw new RuntimeException('synthetic recovery importer failure'); }, $recoverySafetyCreator, $restoreTempRoot);
+} catch (RuntimeException $error) {
+    $recoveryFailureReported = str_contains($error->getMessage(), 'may be partially restored') && $error->getPrevious() instanceof RuntimeException;
+}
+$assert($recoveryFailureReported && $restoreDb->query('SELECT value FROM restore_fixture WHERE id=1')->fetchColumn() === 'recovery-partial', 'failed explicit recovery preserves the importer cause and reports potentially partial recovery');
+$successAuditsBeforeFailure = (int) $restoreDb->query("SELECT COUNT(*) FROM audit_logs WHERE action='backup.restored'")->fetchColumn();
+$restoreDb->exec("CREATE TRIGGER fail_restore_success_audit BEFORE INSERT ON audit_logs WHEN NEW.action = 'backup.restored' BEGIN SELECT RAISE(ABORT, 'synthetic success audit failure'); END");
+$successAuditFailureReported = false;
+try {
+    BackupService::restoreDatabase($restoreDb, $restoreActor, $databaseBackupId, 'RESTORE ' . $databaseBackupId, static function (string $path, PDO $testDatabase): void { $testDatabase->exec("UPDATE restore_fixture SET value='imported-without-audit' WHERE id=1"); }, $recoverySafetyCreator, $restoreTempRoot);
+} catch (RuntimeException $error) {
+    $successAuditFailureReported = str_contains($error->getMessage(), 'finalization failed');
+}
+$restoreDb->exec('DROP TRIGGER fail_restore_success_audit');
+$assert($successAuditFailureReported && $restoreDb->query('SELECT value FROM restore_fixture WHERE id=1')->fetchColumn() === 'imported-without-audit' && (int) $restoreDb->query("SELECT COUNT(*) FROM audit_logs WHERE action='backup.restored'")->fetchColumn() === $successAuditsBeforeFailure, 'post-import success-audit failure is surfaced and is not reported as full restore success');
+$failedHistoryName = (string) $databaseBackupRow['storage_name'];
+$restoreDb->exec("CREATE TRIGGER fail_restore_history BEFORE INSERT ON backups WHEN NEW.storage_name = '" . $failedHistoryName . "' BEGIN SELECT RAISE(ABORT, 'synthetic restore history failure'); END");
+$historyFailureReported = false;
+try {
+    BackupService::restoreDatabase($restoreDb, $restoreActor, $databaseBackupId, 'RESTORE ' . $databaseBackupId, static function (string $path, PDO $testDatabase) use ($databaseBackupId): void {
+        $testDatabase->prepare('DELETE FROM backups WHERE id = :id')->execute(['id' => $databaseBackupId]);
+    }, $recoverySafetyCreator, $restoreTempRoot);
+} catch (RuntimeException $error) {
+    $historyFailureReported = str_contains($error->getMessage(), 'finalization failed');
+}
+$restoreDb->exec('DROP TRIGGER fail_restore_history');
+$assert($historyFailureReported && (int) $restoreDb->query('SELECT COUNT(*) FROM backups WHERE id=' . $databaseBackupId)->fetchColumn() === 0, 'post-import backup-history failure is surfaced rather than claiming full restore success');
+$restoreDb->exec("CREATE TRIGGER fail_restore_failure_audit BEFORE INSERT ON audit_logs WHEN NEW.action = 'backup.restore_failed' BEGIN SELECT RAISE(ABORT, 'synthetic failure audit failure'); END");
+$failureAuditFailureReported = false;
+try {
+    BackupService::restoreDatabase($restoreDb, $restoreActor, $safetyBackupId, 'RESTORE ' . $safetyBackupId, static function (string $path, PDO $testDatabase): void { $testDatabase->exec("UPDATE restore_fixture SET value='partial-without-audit' WHERE id=1"); throw new RuntimeException('synthetic original importer failure'); }, $recoverySafetyCreator, $restoreTempRoot);
+} catch (RuntimeException $error) {
+    $failureAuditFailureReported = str_contains($error->getMessage(), 'failure finalization also failed') && str_contains($error->getMessage(), 'Original import error: RuntimeException');
+}
+$restoreDb->exec('DROP TRIGGER fail_restore_failure_audit');
+$assert($failureAuditFailureReported && $restoreDb->query('SELECT value FROM restore_fixture WHERE id=1')->fetchColumn() === 'partial-without-audit', 'failed-import audit failure is surfaced while preserving original importer failure and partial-state warning');
+$fileProjectRoot = $restoreTempRoot . DIRECTORY_SEPARATOR . 'project fixture with spaces';
 $fileUploadsRoot = $restoreTempRoot . DIRECTORY_SEPARATOR . 'uploads-fixture';
-foreach (['app', 'public/assets', 'resources', 'database', 'scripts', 'vendor/library', 'vendor/node_modules/excluded', 'app/cache/excluded', 'config', 'storage/backups'] as $fixtureDirectory) {
+foreach (['app', 'public/assets', 'resources', 'database', 'scripts', 'vendor/library', 'vendor/node_modules/excluded', 'app/cache/excluded', 'config', 'storage/backups', 'storage/avatars', 'storage/sessions'] as $fixtureDirectory) {
     mkdir($fileProjectRoot . DIRECTORY_SEPARATOR . str_replace('/', DIRECTORY_SEPARATOR, $fixtureDirectory), 0700, true);
 }
 mkdir($fileUploadsRoot . DIRECTORY_SEPARATOR . 'documents', 0700, true);
@@ -273,6 +499,8 @@ $fileFixtureContents = [
     $fileProjectRoot . '/config/database.local.php' => '<?php return ["password" => "synthetic-secret"];',
     $fileProjectRoot . '/.env' => 'synthetic-secret=must-not-archive',
     $fileProjectRoot . '/storage/backups/prior.tar' => 'old backup must not archive',
+    $fileProjectRoot . '/storage/avatars/avatar-fixture.png' => 'synthetic avatar fixture',
+    $fileProjectRoot . '/storage/sessions/session-fixture' => 'session data must not archive',
     $fileUploadsRoot . '/documents/application-fixture.pdf' => '%PDF synthetic upload fixture',
     $fileUploadsRoot . '/documents/upload.tmp' => 'temporary file must not archive',
 ];
@@ -284,9 +512,9 @@ $fileArchive = new PharData($fileBackupPath);
 $archiveEntries = [];
 foreach (new RecursiveIteratorIterator($fileArchive) as $archiveEntry) $archiveEntries[] = str_replace('\\', '/', $archiveEntry->getPathName());
 $archiveEntryText = implode("\n", $archiveEntries);
-$assert($fileBackupRow['verification_status'] === 'verified' && (int) $fileBackupRow['file_size_bytes'] === filesize($fileBackupPath) && hash_equals($fileBackupRow['sha256'], hash_file('sha256', $fileBackupPath)) && BackupIntegrity::checksumMatches($fileBackupPath, $fileBackupRow['sha256']) && !BackupIntegrity::checksumMatches($fileBackupPath, str_repeat('0', 64)) && BackupIntegrity::tarHasSafeStructure($fileBackupPath), 'file backup creation records a verified TAR with matching size and independently checked checksum/structure while rejecting a mismatched checksum');
-$assert(str_contains($archiveEntryText, 'application/app/service.php') && str_contains($archiveEntryText, 'application/vendor/library/runtime.php') && str_contains($archiveEntryText, 'application/config/database.example.php') && str_contains($archiveEntryText, 'uploads/documents/application-fixture.pdf'), 'file backup includes required application/runtime and uploaded-document fixtures');
-$assert(!str_contains($archiveEntryText, 'database.local.php') && !str_contains($archiveEntryText, '.env') && !str_contains($archiveEntryText, 'node_modules') && !str_contains($archiveEntryText, '/cache/') && !str_contains($archiveEntryText, 'prior.tar') && !str_contains($archiveEntryText, 'upload.tmp'), 'file backup excludes local credentials, caches, temporary files, and backup archives');
+$assert($fileBackupRow['verification_status'] === 'verified' && (int) $fileBackupRow['file_size_bytes'] === filesize($fileBackupPath) && hash_equals($fileBackupRow['sha256'], hash_file('sha256', $fileBackupPath)) && BackupIntegrity::checksumMatches($fileBackupPath, $fileBackupRow['sha256']) && !BackupIntegrity::checksumMatches($fileBackupPath, str_repeat('0', 64)) && BackupIntegrity::tarHasSafeStructure($fileBackupPath) && BackupIntegrity::tarHasExpectedEntryCount($fileBackupPath, count($archiveEntries)) && !BackupIntegrity::tarHasExpectedEntryCount($fileBackupPath, count($archiveEntries) + 1), 'file backup creation records a verified TAR with matching size, count, checksum, and structure while rejecting mismatches');
+$assert(str_contains($archiveEntryText, 'application/app/service.php') && str_contains($archiveEntryText, 'application/vendor/library/runtime.php') && str_contains($archiveEntryText, 'application/config/database.example.php') && str_contains($archiveEntryText, 'uploads/documents/application-fixture.pdf') && str_contains($archiveEntryText, 'avatars/avatar-fixture.png'), 'file backup includes required application/runtime, uploaded-document, and avatar fixtures');
+$assert(!str_contains($archiveEntryText, 'database.local.php') && !str_contains($archiveEntryText, '.env') && !str_contains($archiveEntryText, 'node_modules') && !str_contains($archiveEntryText, '/cache/') && !str_contains($archiveEntryText, 'sessions/') && !str_contains($archiveEntryText, 'prior.tar') && !str_contains($archiveEntryText, 'upload.tmp'), 'file backup excludes local credentials, caches, sessions, temporary files, and backup archives');
 $filesBeforeFailure = count(glob($restoreTempRoot . DIRECTORY_SEPARATOR . 'files-*.tar') ?: []);
 $fileWriterFailure = false;
 try {
@@ -418,7 +646,7 @@ foreach ($roleDestinations as $role => $destination) {
 $reviewerLayout = $roleLayouts['reviewer'] ?? '';
 $assert(str_contains($reviewerLayout, 'href="/staff/reports"') && str_contains($reviewerLayout, 'href="/settings"') && !str_contains($reviewerLayout, 'href="/staff/users"') && !str_contains($reviewerLayout, 'href="/staff/backups"') && !str_contains($reviewerLayout, 'href="/settings/system"'), 'reviewer sidebar includes personal Settings and reports but excludes admin-only destinations');
 $adminLayout = $roleLayouts['admin'] ?? '';
-$assert(str_contains($adminLayout, 'href="/staff/users"') && str_contains($adminLayout, 'href="/staff/settings"') && str_contains($adminLayout, 'href="/staff/audit"') && str_contains($adminLayout, 'href="/staff/backups"'), 'admin sidebar includes existing management, audit, and backup routes');
+$assert(str_contains($adminLayout, 'href="/staff/users/administrators"') && str_contains($adminLayout, 'href="/staff/users/staff"') && str_contains($adminLayout, 'href="/staff/users/students"') && str_contains($adminLayout, 'href="/staff/academic/programs"') && str_contains($adminLayout, 'href="/staff/academic/years"') && str_contains($adminLayout, 'href="/staff/academic/requirements"') && str_contains($adminLayout, 'href="/staff/audit"') && str_contains($adminLayout, 'href="/staff/backups"'), 'admin sidebar groups link to six dedicated management routes while preserving audit and backup routes');
 $assert(str_contains($adminLayout, 'href="/settings/system"') && str_contains($adminLayout, 'href="/settings/profile"') && str_contains($adminLayout, 'href="/account/password"') && str_contains($adminLayout, 'href="/notifications"') && !str_contains($adminLayout, 'href="/settings/notifications"'), 'admin profile menu preserves admin settings and links to the existing notification feed');
 $profileScript = file_get_contents(dirname(__DIR__) . '/public/assets/js/app.js');
 $retiredThemeAttribute = 'data-display-' . 'theme';
@@ -478,7 +706,7 @@ $assert(is_string($settingsIndexSource) && !str_contains($settingsIndexSource, $
 $assert(is_string($profileScript) && !str_contains($profileScript, 'localStorage') && !str_contains($profileScript, $retiredThemeAttribute) && !str_contains($profileScript, $retiredDensityAttribute) && is_string($printStylesSource) && !str_contains($printStylesSource, 'data-resolved-theme') && !str_contains($passwordControllerSource, 'data-settings-user-id'), 'removed appearance preferences have no persistence handler, layout hook, or exclusive theme styling');
 $assert(is_string($passwordSettingsSource) && str_contains($passwordSettingsSource, 'security-settings-page') && str_contains($passwordSettingsSource, 'Security Settings') && str_contains($passwordSettingsSource, 'Protect your AdmitFlow account') && str_contains($passwordSettingsSource, 'security-settings-grid') && str_contains($passwordSettingsSource, 'name="_csrf"') && str_contains($passwordSettingsSource, 'action="/account/password"') && str_contains($passwordSettingsSource, 'name="current_password"') && str_contains($passwordSettingsSource, 'name="new_password"') && str_contains($passwordSettingsSource, 'name="password_confirmation"') && str_contains($passwordSettingsSource, 'Update Password') && str_contains($passwordSettingsSource, 'Recent sign-in attempts') && str_contains($passwordSettingsSource, 'not a list of active sessions') && str_contains($passwordSettingsSource, 'data-password-strength') && str_contains($passwordSettingsSource, 'data-password-toggle') && str_contains($passwordSettingsSource, 'data-submit-once') && is_string($passwordControllerSource) && str_contains($passwordControllerSource, 'AuthService::changePassword') && str_contains($passwordControllerSource, 'SecurityPolicy::passwordLengthLimits()'), 'Security Settings has a distinct responsive layout while preserving the CSRF-protected password flow and truthful sign-in history');
 $assert(is_string($profileScript) && str_contains($profileScript, 'new TextEncoder().encode(strengthPassword.value).length') && str_contains($profileScript, 'strengthPassword.setCustomValidity(lengthMessage)') && str_contains($profileScript, 'strengthConfirmation.setCustomValidity(matchMessage)'), 'password form field feedback matches server-side byte limits and confirmation validation');
-$assert(is_string($systemSettingsSource) && str_contains($systemSettingsSource, 'href="/staff/settings"') && str_contains($systemSettingsSource, 'href="/staff/users"') && str_contains($systemSettingsSource, 'href="/staff/audit"') && str_contains($systemSettingsSource, 'href="/staff/backups"') && str_contains($systemSettingsSource, '$systemInfo[\'version\']') && str_contains($systemSettingsSource, '$systemInfo[\'password_reset_smtp\']') && str_contains($systemSettingsSource, 'does not enable email notifications') && str_contains($systemSettingsSource, 'Admissions configuration') && str_contains($systemSettingsSource, 'Access and data protection'), 'System Settings groups existing admin routes and explicitly limits the SMTP status to password-reset email');
+$assert(is_string($systemSettingsSource) && str_contains($systemSettingsSource, 'href="/staff/academic/programs"') && str_contains($systemSettingsSource, 'href="/staff/academic/years"') && str_contains($systemSettingsSource, 'href="/staff/academic/requirements"') && str_contains($systemSettingsSource, 'href="/staff/users/administrators"') && str_contains($systemSettingsSource, 'href="/staff/users/staff"') && str_contains($systemSettingsSource, 'href="/staff/users/students"') && str_contains($systemSettingsSource, 'href="/staff/audit"') && str_contains($systemSettingsSource, 'href="/staff/backups"') && str_contains($systemSettingsSource, '$systemInfo[\'version\']') && str_contains($systemSettingsSource, '$systemInfo[\'password_reset_smtp\']') && str_contains($systemSettingsSource, 'does not enable email notifications') && str_contains($systemSettingsSource, 'Admissions configuration') && str_contains($systemSettingsSource, 'Access and data protection'), 'System Settings links directly to the six dedicated admin pages and retains existing audit/backup routes');
 $originalProfileName = (string) $database->query('SELECT full_name FROM users WHERE id=' . $userId)->fetchColumn();
 $invalidProfileUpdate = AccountSettingsService::updateProfileName($database, ['id' => $userId, 'full_name' => $originalProfileName, 'role' => 'student'], 'Invalid123');
 $assert(!$invalidProfileUpdate['ok'] && $database->query('SELECT full_name FROM users WHERE id=' . $userId)->fetchColumn() === $originalProfileName, 'invalid profile update preserves existing account name');
@@ -567,7 +795,7 @@ $dashboardData = [
     'reviewers' => [],
 ];
 $adminDashboardMarkup = $renderStaffDashboard($dashboardData);
-$assert(str_contains($adminDashboardMarkup, 'class="is-active" href="/admin"') && str_contains($adminDashboardMarkup, 'href="/staff/users"') && str_contains($adminDashboardMarkup, 'href="/staff/audit"') && str_contains($adminDashboardMarkup, 'href="/staff/backups"') && str_contains($adminDashboardMarkup, 'href="/staff/settings"') && str_contains($adminDashboardMarkup, 'href="/staff/announcements"') && str_contains($adminDashboardMarkup, 'Staff Fixture Notice'), 'admin dashboard preserves existing destinations, links the Announcement Center, and displays the active staff notice');
+$assert(str_contains($adminDashboardMarkup, 'class="is-active" href="/admin"') && str_contains($adminDashboardMarkup, 'href="/staff/users/administrators"') && str_contains($adminDashboardMarkup, 'href="/staff/users/staff"') && str_contains($adminDashboardMarkup, 'href="/staff/users/students"') && str_contains($adminDashboardMarkup, 'href="/staff/academic/programs"') && str_contains($adminDashboardMarkup, 'href="/staff/academic/years"') && str_contains($adminDashboardMarkup, 'href="/staff/academic/requirements"') && str_contains($adminDashboardMarkup, 'href="/staff/audit"') && str_contains($adminDashboardMarkup, 'href="/staff/backups"') && str_contains($adminDashboardMarkup, 'href="/staff/announcements"') && str_contains($adminDashboardMarkup, 'Staff Fixture Notice'), 'admin dashboard preserves destinations, links the six dedicated admin pages, and displays the active staff notice');
 $dashboardData['user'] = ['id'=>3,'full_name'=>'Fixture Reviewer','role'=>'reviewer'];
 $dashboardData['adminDashboard'] = false;
 $reviewerDashboardMarkup = $renderStaffDashboard($dashboardData);

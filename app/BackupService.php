@@ -1,6 +1,8 @@
 <?php
 declare(strict_types=1);
 
+require_once __DIR__ . '/FileArchiveRestorer.php';
+
 final class BackupService
 {
     public static function logRequestEvent(array $event, ?string $logPath = null): void
@@ -144,7 +146,7 @@ final class BackupService
                 $stderrPath = tempnam($backupRoot, '.mysqldump-error-');
                 if ($stderrPath === false) throw new RuntimeException('Could not prepare private dump diagnostics.');
                 chmod($stderrPath, 0600);
-                $command = [$dumpTool, '--host=' . $config['host'], '--port=' . (string) $config['port'], '--user=' . $config['username'], '--default-character-set=utf8mb4', '--single-transaction', '--routines', '--triggers', '--skip-lock-tables', $config['database']];
+                $command = [$dumpTool, '--host=' . $config['host'], '--port=' . (string) $config['port'], '--user=' . $config['username'], '--default-character-set=utf8mb4', '--single-transaction', '--triggers', '--skip-lock-tables', $config['database']];
                 $environment = getenv() ?: [];
                 if ($config['password'] !== '') $environment['MYSQL_PWD'] = $config['password'];
                 $descriptor = [0 => ['pipe', 'r'], 1 => ['file', $target, 'wb'], 2 => ['file', $stderrPath, 'wb']];
@@ -311,7 +313,8 @@ final class BackupService
             }
             $stage = 'archive integrity verification';
             self::markStage('integrity-verification', 'files');
-            $isVerified = BackupIntegrity::tarHasSafeStructure($archivePath)
+            $expectedFileCount = (int) ($counts['files'] ?? 0) + (int) ($counts['uploads'] ?? 0) + (int) ($counts['avatars'] ?? 0);
+            $isVerified = BackupIntegrity::tarHasExpectedEntryCount($archivePath, $expectedFileCount)
                 && BackupIntegrity::checksumMatches($archivePath, $checksum);
             if (!$isVerified) {
                 error_log('[admitflow backup] File archive verification failed (bytes=' . $size . ', checksum=' . substr($checksum, 0, 12) . ').');
@@ -347,7 +350,7 @@ final class BackupService
     private static function writeFilesArchive(string $archivePath, string $projectRoot, string $uploadsRoot): array
     {
         $archiveFiles = [];
-        $counts = ['files' => 0, 'uploads' => 0];
+        $counts = ['files' => 0, 'uploads' => 0, 'avatars' => 0];
         foreach (['app', 'public', 'resources', 'database', 'scripts'] as $directory) {
             $path = $projectRoot . DIRECTORY_SEPARATOR . $directory;
             if (!is_dir($path) || !is_readable($path)) {
@@ -375,6 +378,15 @@ final class BackupService
             $counts['files']++;
         }
         $counts['uploads'] = self::collectArchiveTree($archiveFiles, $uploadsRoot, 'uploads', 'uploads');
+        $avatarRoot = $projectRoot . DIRECTORY_SEPARATOR . 'storage' . DIRECTORY_SEPARATOR . 'avatars';
+        if (is_link($avatarRoot)) throw new RuntimeException('Avatar backup source cannot be a symbolic link.');
+        if (is_dir($avatarRoot)) {
+            $resolvedAvatarRoot = realpath($avatarRoot);
+            if ($resolvedAvatarRoot === false || !str_starts_with($resolvedAvatarRoot, $projectRoot . DIRECTORY_SEPARATOR)) {
+                throw new RuntimeException('Avatar backup source must remain inside the application project.');
+            }
+            $counts['avatars'] = self::collectArchiveTree($archiveFiles, $resolvedAvatarRoot, 'avatars', 'uploads');
+        }
         if ($archiveFiles === []) throw new RuntimeException('No eligible application or uploaded files were found.');
         $archive = new PharData($archivePath);
         $archive->buildFromIterator(new ArrayIterator($archiveFiles));
@@ -401,7 +413,7 @@ final class BackupService
                 throw new RuntimeException('An unsafe relative path was found in the file backup source.');
             }
             $parts = explode('/', $relative);
-            $excludedDirectories = ['.git', 'node_modules', 'cache', 'caches', 'tmp', 'temp', 'logs', 'backups', '__pycache__'];
+            $excludedDirectories = ['.git', 'node_modules', 'cache', 'caches', 'tmp', 'temp', 'logs', 'backups', 'sessions', '__pycache__'];
             if (array_intersect(array_map('strtolower', array_slice($parts, 0, -1)), $excludedDirectories) !== []) continue;
             if (preg_match('/(^|\/)(?:\.env(?:\.[^\/]*)?|database\.local\.php|auth\.json|credentials?\.json)$/i', $relative)) continue;
             if (in_array(strtolower($name), ['.gitignore', '.htaccess'], true) && $kind === 'uploads') continue;
@@ -414,14 +426,14 @@ final class BackupService
 
     public static function verify(PDO $database, array $actor, int $backupId): bool
     {
-        $statement = $database->prepare('SELECT storage_name, backup_type, sha256 FROM backups WHERE id = :id');
+        $statement = $database->prepare('SELECT storage_name, backup_type, file_size_bytes, sha256 FROM backups WHERE id = :id');
         $statement->execute(['id' => $backupId]);
         $backup = $statement->fetch();
         if (!is_array($backup)) {
             throw new DomainException('That backup record could not be found.');
         }
         $path = self::storedBackupPath(self::backupRoot(), (string) $backup['storage_name']);
-        $validHash = $path !== null && BackupIntegrity::checksumMatches($path, (string) $backup['sha256']);
+        $validHash = $path !== null && filesize($path) === (int) $backup['file_size_bytes'] && BackupIntegrity::checksumMatches($path, (string) $backup['sha256']);
         $validStructure = $validHash && ($backup['backup_type'] === 'database' ? BackupIntegrity::databaseDumpHasExpectedStructure($path) : BackupIntegrity::tarHasSafeStructure($path));
 
         $database->beginTransaction();
@@ -436,6 +448,97 @@ final class BackupService
         }
 
         return $validStructure;
+    }
+
+    public static function restoreFiles(
+        PDO $database,
+        array $actor,
+        int $backupId,
+        string $confirmation,
+        ?string $projectRoot = null,
+        ?string $uploadsRoot = null,
+        ?string $storageRoot = null
+    ): int {
+        if (($actor['role'] ?? '') !== 'admin') {
+            throw new DomainException('Administrator access is required to restore file backups.');
+        }
+        if (!hash_equals('RESTORE FILES ' . $backupId, trim($confirmation))) {
+            throw new DomainException('Type RESTORE FILES ' . $backupId . ' to confirm this file replacement.');
+        }
+
+        $root = self::backupRoot($storageRoot);
+        $projectRoot = realpath($projectRoot ?? dirname(__DIR__));
+        $uploadsRoot = realpath($uploadsRoot ?? dirname(__DIR__) . '/storage/uploads');
+        if ($projectRoot === false || $uploadsRoot === false || !is_dir($projectRoot) || !is_dir($uploadsRoot)) {
+            throw new RuntimeException('File restore source or destination storage is unavailable.');
+        }
+
+        $statement = $database->prepare('SELECT id, backup_type, storage_name, file_size_bytes, sha256, verification_status FROM backups WHERE id = :id');
+        $statement->execute(['id' => $backupId]);
+        $backup = $statement->fetch();
+        if (!is_array($backup) || $backup['backup_type'] !== 'files') {
+            throw new DomainException('Choose an existing file archive. Database backups cannot be restored as files.');
+        }
+        if ($backup['verification_status'] !== 'verified') {
+            throw new DomainException('Only a verified file archive can be restored.');
+        }
+
+        $archivePath = self::storedBackupPath($root, (string) $backup['storage_name']);
+        if ($archivePath === null
+            || filesize($archivePath) !== (int) $backup['file_size_bytes']
+            || !BackupIntegrity::checksumMatches($archivePath, (string) $backup['sha256'])
+            || !BackupIntegrity::tarHasSafeStructure($archivePath)) {
+            throw new DomainException('The selected file archive failed checksum or structure validation.');
+        }
+
+        $safetyBackupId = 0;
+        try {
+            $result = FileArchiveRestorer::restore(
+                $archivePath,
+                $projectRoot,
+                $uploadsRoot,
+                $root,
+                static function () use (&$safetyBackupId, $database, $actor, $projectRoot, $uploadsRoot, $root): int {
+                    $safetyBackupId = self::createFiles($database, $actor, $projectRoot, $uploadsRoot, $root);
+                    $safetyQuery = $database->prepare('SELECT storage_name, file_size_bytes, sha256, verification_status FROM backups WHERE id = :id AND backup_type = \'files\'');
+                    $safetyQuery->execute(['id' => $safetyBackupId]);
+                    $safetyBackup = $safetyQuery->fetch();
+                    $safetyPath = is_array($safetyBackup)
+                        ? self::storedBackupPath($root, (string) $safetyBackup['storage_name'])
+                        : null;
+                    if (!is_array($safetyBackup)
+                        || $safetyBackup['verification_status'] !== 'verified'
+                        || $safetyPath === null
+                        || filesize($safetyPath) !== (int) $safetyBackup['file_size_bytes']
+                        || !BackupIntegrity::checksumMatches($safetyPath, (string) $safetyBackup['sha256'])
+                        || !BackupIntegrity::tarHasSafeStructure($safetyPath)) {
+                        throw new RuntimeException('The required file safety backup failed independent verification.');
+                    }
+                    return $safetyBackupId;
+                },
+                static function (int $verifiedSafetyBackupId) use ($database, $actor, $backupId): void {
+                    $database->beginTransaction();
+                    try {
+                        self::restoreAudit($database, $actor, 'backup.files_restored', $backupId, 'success');
+                        $database->commit();
+                    } catch (Throwable $error) {
+                        if ($database->inTransaction()) $database->rollBack();
+                        throw $error;
+                    }
+                }
+            );
+            return (int) $result['safety_backup_id'];
+        } catch (Throwable $error) {
+            try {
+                $database->beginTransaction();
+                self::restoreAudit($database, $actor, 'backup.files_restore_failed', $backupId, 'failure');
+                $database->commit();
+            } catch (Throwable $auditError) {
+                if ($database->inTransaction()) $database->rollBack();
+                error_log('[admitflow backup] File restore failure audit could not be recorded (' . $auditError::class . ').');
+            }
+            throw $error;
+        }
     }
 
     public static function restoreDatabase(
@@ -454,6 +557,11 @@ final class BackupService
             throw new DomainException('Type RESTORE ' . $backupId . ' to confirm this database replacement.');
         }
 
+        $restoreConfig = null;
+        if ($restoreExecutor === null) {
+            $restoreConfig = self::databaseConfig();
+        }
+
         $root = self::backupRoot($storageRoot);
         $statement = $database->prepare('SELECT id, backup_type, storage_name, file_size_bytes, sha256, verification_status, created_by, created_at FROM backups WHERE id = :id');
         $statement->execute(['id' => $backupId]);
@@ -465,25 +573,39 @@ final class BackupService
             throw new DomainException('Only a verified database backup can be restored.');
         }
         $backupPath = self::storedBackupPath($root, (string) $backup['storage_name']);
-        if ($backupPath === null || !BackupIntegrity::checksumMatches($backupPath, (string) $backup['sha256']) || !BackupIntegrity::databaseDumpHasExpectedStructure($backupPath)) {
+        if ($backupPath === null
+            || filesize($backupPath) !== (int) $backup['file_size_bytes']
+            || !BackupIntegrity::checksumMatches($backupPath, (string) $backup['sha256'])
+            || !BackupIntegrity::databaseDumpHasExpectedStructure($backupPath)
+            || !BackupIntegrity::databaseDumpTargetsOnlySchema($backupPath, $restoreConfig['database'] ?? (getenv('ADMITFLOW_RESTORE_APPROVED_DATABASE') ?: null))) {
             throw new DomainException('The selected database backup failed checksum or format validation.');
         }
+        if ($restoreConfig !== null) self::verifyRestoreDestination($database, $restoreConfig);
 
-        $safetyBackupId = $safetyBackupCreator !== null
-            ? (int) $safetyBackupCreator($database, $actor, $root)
-            : self::createDatabase($database, $actor);
-        if ($safetyBackupId < 1) {
-            throw new RuntimeException('The required safety backup was not created. Restore was not started.');
-        }
-        $safetyQuery = $database->prepare('SELECT storage_name, file_size_bytes, sha256, verification_status FROM backups WHERE id = :id AND backup_type = \'database\'');
-        $safetyQuery->execute(['id' => $safetyBackupId]);
-        $safetyBackup = $safetyQuery->fetch();
-        if (!is_array($safetyBackup) || $safetyBackup['verification_status'] !== 'verified') {
-            throw new RuntimeException('The safety backup could not be verified. Restore was not started.');
-        }
-        $safetyPath = self::storedBackupPath($root, (string) $safetyBackup['storage_name']);
-        if ($safetyPath === null || !BackupIntegrity::checksumMatches($safetyPath, (string) $safetyBackup['sha256']) || !BackupIntegrity::databaseDumpHasExpectedStructure($safetyPath)) {
-            throw new RuntimeException('The safety backup failed validation. Restore was not started.');
+        try {
+            $safetyBackupId = $safetyBackupCreator !== null
+                ? (int) $safetyBackupCreator($database, $actor, $root)
+                : self::createDatabase($database, $actor);
+            if ($safetyBackupId < 1 || $safetyBackupId === $backupId) {
+                throw new RuntimeException('The required safety backup was not created. Restore was not started.');
+            }
+            $safetyQuery = $database->prepare('SELECT id, storage_name, file_size_bytes, sha256, verification_status, created_by, created_at FROM backups WHERE id = :id AND backup_type = \'database\'');
+            $safetyQuery->execute(['id' => $safetyBackupId]);
+            $safetyBackup = $safetyQuery->fetch();
+            if (!is_array($safetyBackup) || (int) $safetyBackup['id'] !== $safetyBackupId || $safetyBackup['verification_status'] !== 'verified') {
+                throw new RuntimeException('The safety backup could not be verified. Restore was not started.');
+            }
+            $safetyPath = self::storedBackupPath($root, (string) $safetyBackup['storage_name']);
+            if ($safetyPath === null
+                || filesize($safetyPath) !== (int) $safetyBackup['file_size_bytes']
+                || !BackupIntegrity::checksumMatches($safetyPath, (string) $safetyBackup['sha256'])
+                || !BackupIntegrity::databaseDumpHasExpectedStructure($safetyPath)
+                || !BackupIntegrity::databaseDumpTargetsOnlySchema($safetyPath, $restoreConfig['database'] ?? (getenv('ADMITFLOW_RESTORE_APPROVED_DATABASE') ?: null))) {
+                throw new RuntimeException('The safety backup failed validation. Restore was not started.');
+            }
+        } catch (Throwable $error) {
+            self::recordRestoreFailure($database, $actor, $backupId, null, $error);
+            throw $error;
         }
 
         try {
@@ -494,23 +616,163 @@ final class BackupService
             }
         } catch (Throwable $error) {
             try {
+                $database->beginTransaction();
                 self::ensureBackupHistory($database, $actor, $safetyBackup);
-            } catch (Throwable) {
-                error_log('[admitflow backup] Safety backup history could not be restored after import failure.');
+                self::restoreAudit($database, $actor, 'backup.restore_failed', $backupId, 'failure');
+                $database->commit();
+            } catch (Throwable $finalizationError) {
+                if ($database->inTransaction()) $database->rollBack();
+                error_log('[admitflow backup] Failed import could not be fully audited or its safety history restored (' . $finalizationError::class . ').');
+                throw new RuntimeException('Database restore failed and failure finalization also failed. The database may be partially restored; safety backup #' . $safetyBackupId . ' remains in private storage. Original import error: ' . $error::class . '; audit/history error: ' . $finalizationError::class, 0, $error);
             }
-            self::restoreFailureAudit($database, $actor, $backupId);
             throw new RuntimeException('Database restore failed. The database may be partially restored; safety backup #' . $safetyBackupId . ' remains in private storage.', 0, $error);
         }
 
-    self::ensureBackupHistory($database, $actor, $backup);
-    self::ensureBackupHistory($database, $actor, $safetyBackup);
-    self::restoreAudit($database, $actor, 'backup.restored', $backupId, 'success');
+        try {
+            $database->beginTransaction();
+            self::ensureBackupHistory($database, $actor, $backup);
+            self::ensureBackupHistory($database, $actor, $safetyBackup);
+            self::restoreAudit($database, $actor, 'backup.restored', $backupId, 'success');
+            $database->commit();
+        } catch (Throwable $error) {
+            if ($database->inTransaction()) $database->rollBack();
+            error_log('[admitflow backup] Database import completed but restore finalization failed (' . $error::class . '); safety backup #' . $safetyBackupId . ' was retained.');
+            throw new RuntimeException('Database import completed, but restore history or success audit finalization failed. Do not treat the restore as fully successful; safety backup #' . $safetyBackupId . ' remains in private storage.', 0, $error);
+        }
         return $safetyBackupId;
+    }
+
+    public static function validateRestoreTargetIdentities(
+        string $pdoDatabase,
+        string $pdoUser,
+        string $clientDatabase,
+        string $clientUser,
+        string $configuredDatabase,
+        string $configuredUser,
+        string $approvedDatabase
+    ): void {
+        if ($configuredDatabase === '' || $configuredUser === '' || $approvedDatabase === ''
+            || $pdoDatabase === '' || $clientDatabase === '' || $pdoUser === '' || $clientUser === '') {
+            throw new RuntimeException('Restore destination identity could not be verified.');
+        }
+        if ($configuredDatabase !== $approvedDatabase || $pdoDatabase !== $configuredDatabase || $clientDatabase !== $configuredDatabase) {
+            throw new RuntimeException('PDO, MySQL client, configured, and explicitly approved restore databases must match exactly.');
+        }
+        $pdoAccount = explode('@', $pdoUser, 2)[0];
+        $clientAccount = explode('@', $clientUser, 2)[0];
+        if ($pdoAccount !== $configuredUser || $clientAccount !== $configuredUser || $pdoUser !== $clientUser) {
+            throw new RuntimeException('PDO or MySQL client account does not match the configured restore user.');
+        }
+    }
+
+    public static function validateRestoreGrants(array $grants, string $databaseName): void
+    {
+        if (!preg_match('/^[A-Za-z0-9_]+$/', $databaseName) || $grants === []) {
+            throw new RuntimeException('Restore account grants could not be verified.');
+        }
+        $allowedSchemaPrivileges = ['SELECT', 'SHOW VIEW', 'TRIGGER', 'CREATE', 'DROP', 'ALTER', 'LOCK TABLES'];
+        $requiredSchemaPrivileges = array_fill_keys($allowedSchemaPrivileges, false);
+        $requiredInsertTables = ['audit_logs', 'backups', 'login_attempts', 'system_settings', 'users'];
+        $tableInserts = array_fill_keys($requiredInsertTables, false);
+        $globalUsageFound = false;
+        foreach ($grants as $grant) {
+            $grant = trim((string) $grant);
+            if ($grant === '' || stripos($grant, 'WITH GRANT OPTION') !== false || stripos($grant, 'WITH ADMIN OPTION') !== false) {
+                throw new RuntimeException('Restore account has a grant option or malformed privilege.');
+            }
+            if (preg_match('/^GRANT\s+(.+?)\s+ON\s+(.+?)\s+TO\b/i', $grant, $matches) !== 1) {
+                throw new RuntimeException('Restore account has an unrecognized grant or role.');
+            }
+
+            $privileges = array_map(static fn (string $privilege): string => strtoupper(trim($privilege)), explode(',', trim($matches[1])));
+            if (in_array('', $privileges, true) || count($privileges) !== count(array_unique($privileges))) {
+                throw new RuntimeException('Restore account has a malformed or duplicate privilege list.');
+            }
+            $scope = strtolower(str_replace('`', '', preg_replace('/\s+/', '', trim($matches[2])) ?? ''));
+
+            if ($scope === '*.*') {
+                if ($privileges !== ['USAGE'] || $globalUsageFound) {
+                    throw new RuntimeException('Restore account has a global privilege beyond USAGE or a duplicate grant.');
+                }
+                $globalUsageFound = true;
+                continue;
+            }
+
+            if ($scope === strtolower($databaseName . '.*')) {
+                foreach ($privileges as $privilege) {
+                    if (!array_key_exists($privilege, $requiredSchemaPrivileges) || $requiredSchemaPrivileges[$privilege]) {
+                        throw new RuntimeException('Restore account has an unnecessary, duplicate, or administrative schema privilege.');
+                    }
+                    $requiredSchemaPrivileges[$privilege] = true;
+                }
+                continue;
+            }
+
+            if (preg_match('/^' . preg_quote(strtolower($databaseName), '/') . '\.([a-z0-9_]+)$/', $scope, $tableMatch) === 1) {
+                $table = $tableMatch[1];
+                if (!array_key_exists($table, $tableInserts) || $privileges !== ['INSERT'] || $tableInserts[$table]) {
+                    throw new RuntimeException('Restore account has an unexpected table-level privilege or target.');
+                }
+                $tableInserts[$table] = true;
+                continue;
+            }
+
+            throw new RuntimeException('Restore account has privileges outside the approved database schema.');
+        }
+
+        if (!$globalUsageFound || in_array(false, $requiredSchemaPrivileges, true) || in_array(false, $tableInserts, true)) {
+            throw new RuntimeException('Restore account is missing one or more exact required database privileges.');
+        }
+    }
+
+    public static function assertRestoreDestination(PDO $database): void
+    {
+        self::verifyRestoreDestination($database, self::databaseConfig());
+    }
+
+    private static function verifyRestoreDestination(PDO $database, array $config): void
+    {
+        if ($database->getAttribute(PDO::ATTR_DRIVER_NAME) !== 'mysql') {
+            throw new RuntimeException('The restore metadata connection is not a MySQL connection.');
+        }
+        $approvedDatabase = (string) (getenv('ADMITFLOW_RESTORE_APPROVED_DATABASE') ?: '');
+        $pdoIdentity = $database->query('SELECT DATABASE(), CURRENT_USER()')->fetch(PDO::FETCH_NUM);
+        if (!is_array($pdoIdentity) || count($pdoIdentity) < 2) throw new RuntimeException('PDO restore destination identity could not be verified.');
+
+        $mysql = getenv('ADMITFLOW_MYSQL') ?: (is_file('C:\\xampp\\mysql\\bin\\mysql.exe') ? 'C:\\xampp\\mysql\\bin\\mysql.exe' : 'mysql');
+        if (str_contains($mysql, DIRECTORY_SEPARATOR) && !is_file($mysql)) throw new RuntimeException('The configured MySQL client was not found.');
+        $command = [$mysql, '--batch', '--skip-column-names', '--host=' . $config['host'], '--port=' . (string) $config['port'], '--user=' . $config['username'], '--default-character-set=utf8mb4', '--execute=SELECT DATABASE(), CURRENT_USER()', $config['database']];
+        $environment = getenv() ?: [];
+        if ($config['password'] !== '') $environment['MYSQL_PWD'] = $config['password'];
+        $pipes = [];
+        $process = @proc_open($command, [0 => ['pipe', 'r'], 1 => ['pipe', 'w'], 2 => ['pipe', 'w']], $pipes, dirname(__DIR__), $environment);
+        if (!is_resource($process)) throw new RuntimeException('Could not verify the configured MySQL client destination.');
+        fclose($pipes[0]);
+        $output = trim((string) stream_get_contents($pipes[1]));
+        stream_get_contents($pipes[2]);
+        fclose($pipes[1]);
+        fclose($pipes[2]);
+        if (proc_close($process) !== 0) throw new RuntimeException('The configured MySQL client destination check failed.');
+        $identity = explode("\t", $output);
+        if (count($identity) !== 2) throw new RuntimeException('The configured MySQL client returned an unverifiable destination identity.');
+        self::validateRestoreTargetIdentities((string) $pdoIdentity[0], (string) $pdoIdentity[1], $identity[0], $identity[1], (string) $config['database'], (string) $config['username'], $approvedDatabase);
+
+        $grants = $database->query('SHOW GRANTS')->fetchAll(PDO::FETCH_COLUMN);
+        self::validateRestoreGrants($grants, (string) $config['database']);
+    }
+
+    private static function recordRestoreFailure(PDO $database, array $actor, int $backupId, ?string $safetyBackupId, Throwable $cause): void
+    {
+        try {
+            self::restoreAudit($database, $actor, 'backup.restore_failed', $backupId, 'failure');
+        } catch (Throwable $auditError) {
+            error_log('[admitflow backup] Restore prerequisite failure audit could not be recorded (' . $auditError::class . '); cause=' . $cause::class . '; safety_backup=' . ($safetyBackupId ?? 'unavailable'));
+        }
     }
 
     public static function safeRestoreInstructions(): string
     {
-        return 'Only verified database dumps from the private backup inventory can be selected. The server rechecks the stored checksum and expected dump structure, creates and verifies a safety backup, then imports the selected dump with the configured MySQL client. Stop application writes and confirm the target environment before restoring. A checksum and structure check does not prove that a dump is restorable; test backups in an isolated database first. A failed import can leave a partial restore, so recovery from the retained safety backup requires a separate explicit restore.';
+        return 'Only verified database dumps and file archives from the private inventory can be restored. Database restore rechecks target identity, grants, checksum, and SQL structure and creates a verified safety backup before import. File restore rechecks archive integrity, rejects links and unsafe paths, stages eligible files, and creates a verified file safety archive before replacing matching destinations. Stop application writes and schedule a maintenance window before either operation. Database imports and multi-file replacement are not atomic; a failure may leave partial state, so inspect and recover from the retained safety backup using a separate explicit operation.';
     }
 
     private static function backupRoot(?string $override = null): string

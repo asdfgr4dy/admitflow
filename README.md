@@ -81,9 +81,7 @@ For local file-mailbox testing instead of SMTP, set `$env:ADMITFLOW_MAIL_ENABLED
 8. Start the PHP 8.2 development server from the project directory:
 
    ```powershell
-   $env:ADMITFLOW_APP_ENV = 'local'
-   $env:ADMITFLOW_APP_URL = 'http://127.0.0.1:8000'
-   php -d upload_max_filesize=10M -d post_max_size=60M -d max_file_uploads=10 -S 127.0.0.1:8000 -t public public/router.php
+   $env:ADMITFLOW_APP_ENV='local'; $env:ADMITFLOW_APP_URL='http://127.0.0.1:8000'; php -d upload_max_filesize=10M -d post_max_size=60M -d max_file_uploads=10 -S 127.0.0.1:8000 -t public public/router.php
    ```
 
 9. Visit `http://127.0.0.1:8000`. Do not expose the development server to a public network.
@@ -114,9 +112,48 @@ User-provided institution identity, address, phone, contact email, and office ho
 - Active account status and role are reloaded from the database on every routed request, so role changes/deactivation take effect without waiting for session expiry.
 - Student application reads and document downloads include owner checks. Uploads use private `storage/uploads`, randomized storage names, server-side MIME detection, configured size/extension checks, and SHA-256 file checksums.
 - Reports use role-scoped application filters, CSV formula-prefix escaping, minimal personal data, and a 5,000-record export cap. Audit events are displayed without edit/delete operations.
-- This is a student project, not a formal security certification. Full restore controls, route-level authorization tests, and broader end-to-end security testing remain outstanding.
+- This is a student project, not a formal security certification. Actual MySQL restore integration and broader end-to-end security testing remain outstanding.
 
-Backup verification levels: **created** means the dump/archive process completed; **checksum verified** means SHA-256 matches the recorded value; **structure verified** means a database dump contains the required table declarations and completion marker or a TAR archive can be enumerated safely. None of these statuses means **restore tested**. Restore-tested is not represented as a status and requires an isolated test database and a successful import there. Automatic restore is not implemented.
+Backup verification levels: **created** means the dump/archive process completed; **checksum verified** means SHA-256 matches the recorded value; **structure verified** means a database dump contains the required table declarations and completion marker or a TAR archive can be enumerated safely. None of these statuses means **restore tested**. Restore-tested is not represented as a status and requires an isolated test database and a successful import there. Failed imports may leave partial database state; preserve the verified safety backup and perform recovery only as a separate, explicitly confirmed restore.
+
+Before an application restore, set `ADMITFLOW_RESTORE_APPROVED_DATABASE` to exactly the database configured by `ADMITFLOW_DB_DATABASE`. The service verifies the selected database through both PDO and the configured MySQL client, checks the configured account's grants are restricted to that schema, and rejects dump statements that select another schema or contain database-level DDL. Keep the restore account least-privileged; this scanner is defense in depth, not a complete SQL parser. A separately guarded disposable MySQL/MariaDB integration test is available at `tests/run-mariadb-restore-integration.php`; it requires `ADMITFLOW_RUN_MARIADB_RESTORE_INTEGRATION=1` and the exact approved target `admitflow_restore_test`. Do not run it against a live or valuable database.
+
+## Automated backups
+
+The automated CLI runner reuses `Database::connection()`, `BackupService::createDatabase()`, and `BackupService::createFiles()`. Both `daily` and `weekly` runs create a database dump and a separate application-file TAR; the weekly run is a labelled recovery checkpoint, not a single atomic cross-resource snapshot. The file TAR includes required application/runtime directories, `storage/uploads`, and private `storage/avatars`, while excluding local credentials, backup storage, logs, sessions, caches, temporary files, and development dependency directories. The existing database and file verification and audit paths remain in use.
+
+The runner is implemented but Windows Task Scheduler is **not configured or active automatically**. It requires `ADMITFLOW_BACKUP_RUNNER_ENABLED=1`, an explicit `ADMITFLOW_APP_ENV` value from `local`, `development`, `test`, `staging`, or `production`, and `ADMITFLOW_BACKUP_APPROVED_DATABASE` exactly matching the configured database. The runner is pinned to the canonical `C:\Users\Administrator\Documents\admitflow` root and local `127.0.0.1:3306`; it verifies `DATABASE()`, `CURRENT_USER()`, and strict backup-account grants before starting a component backup. The PHP process reads the existing `config/database.local.php` or `ADMITFLOW_DB_*` configuration; keep that file readable only by the Windows account that runs the task. Never put database credentials in task arguments, scripts, or logs. `scripts/run-backup.ps1` defaults to the approved PHP 8.2.33 executable, accepts `ADMITFLOW_PHP_EXECUTABLE` as an override, and rejects versions older than PHP 8.2.
+
+Run the CLI manually from PowerShell to check configuration and operation in an approved environment:
+
+```powershell
+$env:ADMITFLOW_APP_ENV = 'local'
+$env:ADMITFLOW_BACKUP_RUNNER_ENABLED = '1'
+$env:ADMITFLOW_BACKUP_APPROVED_DATABASE = 'admitflow'
+& 'C:\Users\Administrator\AppData\Local\Microsoft\WinGet\Packages\PHP.PHP.8.2_Microsoft.Winget.Source_8wekyb3d8bbwe\php.exe' 'C:\Users\Administrator\Documents\admitflow\scripts\backup-runner.php' daily --source=manual
+```
+
+`daily` and `weekly` both create database and file components. The command returns a nonzero exit code for configuration refusal, a concurrent run, a component failure, or runner failure. A nonblocking private lock prevents overlapping executions. Run history is appended to `storage/logs/automated-backup-history.jsonl`; administrators can review recent outcomes in **Backups and restore**. Each run records its execution ID, source, schedule, timestamps, duration, component status/failure reason, and linked backup size/checksum/verification metadata when available. The separate per-backup inventory remains the source of detailed backup records.
+
+### Windows Task Scheduler setup
+
+Set `ADMITFLOW_APP_ENV`, `ADMITFLOW_BACKUP_RUNNER_ENABLED=1`, and `ADMITFLOW_BACKUP_APPROVED_DATABASE` for the Windows account that will own the tasks; the approval must exactly match the configured database. Ensure the secured database configuration is available to that same account. These variables are not secrets. The task-management script uses local project paths, supports spaces, defaults to daily 01:00 and weekly Sunday 02:00, and does not pass database credentials. Its S4U principal runs with limited privileges and is intended for local XAMPP/database/storage paths; S4U tasks cannot rely on mapped network drives. Confirm the account has read access to PHP/configuration and write access to `storage/backups` and `storage/logs`.
+
+Registration is an explicit manual action. Review the proposed task times and account first, then run PowerShell as the intended task account:
+
+```powershell
+& 'C:\Users\Administrator\Documents\admitflow\scripts\manage-backup-tasks.ps1' -Action Register -DailyTime '01:00' -WeeklyDay Sunday -WeeklyTime '02:00'
+```
+
+Review task state and last/next run results:
+
+```powershell
+& 'C:\Users\Administrator\Documents\admitflow\scripts\manage-backup-tasks.ps1' -Action Review
+```
+
+The script also supports explicit `-Action Enable`, `-Action Disable`, and `-Action Remove`. Alternatively, use Task Scheduler to review each task's trigger, action, account, and history. `StartWhenAvailable` requests a catch-up run after a missed trigger; `IgnoreNew` and the application lock prevent overlapping runs. A failed component returns a failure exit code and its component status is logged; check the Administrator backup page, private JSONL run log, and Task Scheduler's Last Run Result. Disk-full or permission errors may prevent the run log itself from being updated.
+
+Database and file backups are separate inventory entries, so a partial run is visible as a failure with the component outcomes rather than a false full success. A weekly checkpoint is not transactionally consistent across a database and files changing during the run. An administrator can restore a verified file archive from **Backups and restore** by entering `RESTORE FILES <backup-id>`. Before replacing files, the application creates and verifies a new file safety backup; it stages only approved archive roots, rejects unsafe paths and links, leaves files absent from the archive untouched, and records success or failure in the audit log. A failure attempts per-file rollback and retains the safety archive. This is not an atomic whole-project swap: Windows may prevent renames of open files, concurrent application writes can race restoration, and a failed rollback can leave a partial restore. Schedule a maintenance window and inspect/recover from the safety archive if the UI reports an incomplete restore. The fixture restore test is `tests/run-file-restore-tests.php`; it uses temporary files and SQLite only. No real file restore has been executed or verified. Off-site replication and retention deletion are not implemented. Task Scheduler registration, environment setup, permissions, and a successful supervised backup run remain deployment steps; this repository does not enable tasks on installation.
 
 ## Security tests
 

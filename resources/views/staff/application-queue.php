@@ -40,7 +40,7 @@ $resetUrl = $applicationQueuePath . '?' . http_build_query(array_filter(['per_pa
     <div class="application-active-filters" aria-label="Active filters" data-active-filters <?= $activeFilters === [] ? 'hidden' : '' ?>>
         <span class="application-active-label">Active filters</span>
         <?php foreach ($activeFilters as $activeFilter): ?><span class="application-filter-chip"><span><?= e($activeFilter['label']) ?></span><button type="button" aria-label="Remove <?= e($activeFilter['label']) ?> filter" data-clear-filter="<?= e($activeFilter['key']) ?>" <?= $activeFilter['key'] === 'date_range' ? 'data-clear-keys="date_range,start_date,end_date"' : '' ?>><i class="bi bi-x-lg" aria-hidden="true"></i></button></span><?php endforeach; ?>
-        <?php if ($activeFilters !== []): ?><span class="shared-filter-actions"><a href="<?= e($resetUrl) ?>" class="btn btn-link application-reset">Reset Filters</a><a href="<?= e($resetUrl) ?>" class="application-clear-all">Clear all</a></span><?php endif; ?>
+        <?php if ($activeFilters !== []): ?><span class="shared-filter-actions"><a href="<?= e($resetUrl) ?>" class="btn btn-link application-reset">Reset Filters</a></span><?php endif; ?>
     </div>
     <span class="visually-hidden" role="status" aria-live="polite" data-filter-status></span>
 </form>
@@ -48,8 +48,8 @@ $resetUrl = $applicationQueuePath . '?' . http_build_query(array_filter(['per_pa
 <?php if ($applications['rows'] === []): ?>
     <div class="empty-state staff-empty"><span class="empty-icon"><i class="bi bi-inbox" aria-hidden="true"></i></span><div><p class="eyebrow">No matching records</p><h2>No applications match these filters.</h2><p>Change a filter or reset the current selection to see more applications.</p></div></div>
 <?php else: ?>
-    <div class="table-responsive staff-table-wrap">
-        <table class="table staff-table"><caption class="visually-hidden">Admissions application queue</caption><thead><tr><th scope="col">Applicant</th><th scope="col">Reference</th><th scope="col">Program / year</th><th scope="col">Submitted</th><th scope="col">Documents</th><th scope="col">Reviewer</th><th scope="col">Status</th><th scope="col"><span class="visually-hidden">Actions</span></th></tr></thead><tbody>
+    <div class="table-responsive staff-table-wrap academic-table-wrap">
+        <table class="table staff-table academic-table"><caption class="visually-hidden">Admissions application queue</caption><thead><tr><th scope="col">Applicant</th><th scope="col">Reference</th><th scope="col">Program / year</th><th scope="col">Submitted</th><th scope="col">Documents</th><th scope="col">Reviewer</th><th scope="col">Status</th><th scope="col"><span class="visually-hidden">Actions</span></th></tr></thead><tbody>
         <?php foreach ($applications['rows'] as $row): ?><tr><td><strong><?= e($row['full_name']) ?></strong></td><td><?= e($row['reference_number']) ?></td><td><?= e($row['program_name'] ?? 'Not selected') ?><small><?= e($row['year_label'] ?? 'No intake') ?></small></td><td><?= e($row['submitted_at'] ? date('M j, Y', strtotime($row['submitted_at'] . ' UTC')) : '—') ?></td><td><?= (int) $row['uploaded_documents'] ?> / <?= (int) $row['required_documents'] ?> uploaded</td><td><?= e($row['reviewer_name'] ?? 'Unassigned') ?></td><td><span class="status-pill status-<?= e($row['status']) ?>"><?= e($statusLabels[$row['status']] ?? $row['status']) ?></span></td><td><a class="btn btn-sm btn-outline-navy" href="/staff/application/<?= (int) $row['id'] ?>">Review <i class="bi bi-arrow-up-right" aria-hidden="true"></i></a></td></tr><?php endforeach; ?>
         </tbody></table>
     </div>

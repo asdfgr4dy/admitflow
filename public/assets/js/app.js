@@ -184,24 +184,25 @@
         if (refreshStaleDatePreset) submitFilters();
     });
 
-    const announcementModal = document.querySelector('[data-announcement-modal]');
-    if (announcementModal && window.bootstrap?.Modal) {
-        const scheduleFields = announcementModal.querySelector('[data-schedule-fields]');
-        const scheduleDate = announcementModal.querySelector('[data-schedule-date]');
-        const submitLabel = announcementModal.querySelector('[data-announcement-submit-label]');
-        const submitButton = announcementModal.querySelector('[data-announcement-submit]');
+    const announcementForm = document.querySelector('[data-announcement-form]');
+    if (announcementForm) {
+        const announcementDrawer = announcementForm.closest('[data-form-drawer]');
+        const scheduleFields = announcementForm.querySelector('[data-schedule-fields]');
+        const scheduleDate = announcementForm.querySelector('[data-schedule-date]');
+        const submitLabel = announcementForm.querySelector('[data-announcement-submit-label]');
+        const submitButton = announcementForm.querySelector('[data-drawer-save]');
         const updateAnnouncementMode = () => {
-            const scheduled = announcementModal.querySelector('[data-announcement-mode]:checked')?.value === 'schedule';
+            if (announcementForm.querySelector('[data-drawer-mode="add"]')?.hidden) return;
+            const selectedMode = announcementForm.querySelector('[data-announcement-mode]:checked');
+            if (!selectedMode) return;
+            const scheduled = selectedMode.value === 'schedule';
             if (scheduleFields) scheduleFields.hidden = !scheduled;
             if (scheduleDate) scheduleDate.required = scheduled;
-            if (submitLabel && submitButton) submitLabel.textContent = scheduled ? submitButton.dataset.scheduleLabel : submitButton.dataset.publishLabel;
+            if (submitLabel && submitButton) submitLabel.textContent = scheduled ? 'Schedule announcement' : 'Publish now';
         };
-        announcementModal.querySelectorAll('[data-announcement-mode]').forEach(input => input.addEventListener('change', updateAnnouncementMode));
+        announcementForm.querySelectorAll('[data-announcement-mode]').forEach(input => input.addEventListener('change', updateAnnouncementMode));
         updateAnnouncementMode();
-        announcementModal.addEventListener('shown.bs.modal', () => {
-            (announcementModal.querySelector('.is-invalid') || announcementModal.querySelector('#new_announcement_title'))?.focus();
-        });
-        if (announcementModal.dataset.open === 'true') window.bootstrap.Modal.getOrCreateInstance(announcementModal).show();
+        announcementDrawer?.addEventListener('shown.bs.offcanvas', updateAnnouncementMode);
     }
 
     if (window.bootstrap?.Modal) {
@@ -211,6 +212,190 @@
         });
     }
 
+    document.querySelectorAll('[data-form-drawer]').forEach(formDrawer => {
+        if (!window.bootstrap?.Offcanvas) return;
+        const drawerForm = formDrawer.querySelector('form[data-drawer-form]');
+        const drawerTitle = formDrawer.querySelector('[data-drawer-title]');
+        const drawerSubtitle = formDrawer.querySelector('[data-drawer-subtitle]');
+        const drawerMetadata = formDrawer.querySelector('[data-drawer-metadata]');
+        const saveButton = formDrawer.querySelector('[data-drawer-save]');
+        let initialValues = '';
+        let editMode = false;
+        let drawerReturnFocus = null;
+        const formValues = () => drawerForm ? JSON.stringify([...new FormData(drawerForm).entries()]) : '';
+        const syncDrawerState = () => {
+            const changed = formValues() !== initialValues;
+            if (saveButton) saveButton.disabled = editMode && !changed;
+            formDrawer.querySelectorAll('[data-character-count]').forEach(counter => {
+                const field = drawerForm?.querySelector(`[name="${counter.dataset.characterCount}"]`);
+                if (field) counter.textContent = `${field.value.length} / ${field.maxLength}`;
+            });
+        };
+        const openFormDrawer = (record = null, forcedActive = null, confirmText = '', trigger = null) => {
+            if (confirmText && !window.confirm(confirmText)) return;
+            drawerReturnFocus = trigger instanceof HTMLElement ? trigger : document.activeElement;
+            drawerForm?.reset();
+            drawerForm?.querySelectorAll('[data-drawer-id]').forEach(input => { input.value = record?.[input.name] ?? '0'; });
+            editMode = record !== null;
+            formDrawer.querySelectorAll('[data-drawer-mode]').forEach(modeElement => {
+                const hidden = modeElement.dataset.drawerMode !== (editMode ? 'edit' : 'add');
+                modeElement.hidden = hidden;
+                modeElement.querySelectorAll('input, select, textarea, button').forEach(field => { field.disabled = hidden; });
+            });
+            if (!record) {
+                drawerForm?.querySelectorAll('input:not([type="hidden"]), textarea').forEach(field => {
+                    if (field.type === 'checkbox' || field.type === 'radio') field.checked = field.type === 'checkbox' && ['is_active', 'is_required'].includes(field.name) ? true : field.defaultChecked;
+                    else field.value = '';
+                });
+                drawerForm?.querySelectorAll('select').forEach(field => { field.selectedIndex = 0; });
+            }
+            if (record) {
+                const activeMode = drawerForm?.querySelector('[data-drawer-mode]:not([hidden])');
+                Object.entries(record).forEach(([name, value]) => {
+                    const field = (activeMode || drawerForm)?.querySelector(`[name="${CSS.escape(name)}"]`);
+                    if (!field) return;
+                    if (field.type === 'checkbox') field.checked = value === true || value === 1 || value === '1';
+                    else field.value = value ?? '';
+                });
+            }
+            drawerForm?.querySelectorAll('select[name="academic_program_id"] option[data-available], select[name="academic_year_id"] option[data-available]').forEach(option => {
+                option.disabled = option.dataset.available !== 'true' && !(editMode && option.selected);
+            });
+            initialValues = formValues();
+            if (forcedActive) {
+                const field = drawerForm?.querySelector(`[name="${CSS.escape(forcedActive.name)}"]`);
+                if (field) field.checked = forcedActive.value === '1';
+            }
+            if (drawerTitle) drawerTitle.textContent = `${editMode ? 'Edit' : 'Add'} ${formDrawer.dataset.recordLabel}`;
+            if (drawerSubtitle) drawerSubtitle.textContent = editMode ? (record?.name || record?.label || record?.full_name || record?.title || 'Update record details') : 'Enter the record details below.';
+            if (saveButton) {
+                const label = saveButton.querySelector('[data-announcement-submit-label]');
+                if (label && (editMode || !drawerForm?.querySelector('[data-announcement-mode]:checked'))) label.textContent = editMode ? saveButton.dataset.editLabel : saveButton.dataset.addLabel;
+                else if (!label) saveButton.textContent = editMode ? saveButton.dataset.editLabel : saveButton.dataset.addLabel;
+            }
+            if (drawerMetadata) {
+                drawerMetadata.hidden = !editMode;
+                drawerMetadata.querySelector('[data-created-metadata]').textContent = record?.created_at ? `Created ${record.created_at} UTC` : '';
+                drawerMetadata.querySelector('[data-updated-metadata]').textContent = record?.updated_at ? `Updated ${record.updated_at} UTC` : '';
+            }
+            formDrawer.querySelectorAll('[data-server-error]').forEach(error => { error.hidden = true; });
+            if (!editMode) drawerForm?.querySelector('[data-announcement-mode]:checked')?.dispatchEvent(new Event('change', { bubbles: true }));
+            syncDrawerState();
+            window.bootstrap.Offcanvas.getOrCreateInstance(formDrawer).show();
+        };
+        const drawerSelector = `#${CSS.escape(formDrawer.id)}`;
+        document.querySelectorAll(`[data-drawer-add="${drawerSelector}"], [data-academic-add]`).forEach(button => button.addEventListener('click', event => openFormDrawer(null, null, '', event.currentTarget)));
+        document.querySelectorAll(`[data-drawer-edit="${drawerSelector}"], [data-academic-edit]`).forEach(button => button.addEventListener('click', event => {
+            let record = {};
+            try { record = JSON.parse(event.currentTarget.dataset.record || '{}'); } catch {}
+            openFormDrawer(record, null, '', event.currentTarget.closest('.dropdown')?.querySelector('[data-bs-toggle="dropdown"]') || event.currentTarget);
+        }));
+        document.querySelectorAll('[data-academic-status]').forEach(button => button.addEventListener('click', event => {
+            let record = {};
+            try { record = JSON.parse(button.dataset.record || '{}'); } catch {}
+            openFormDrawer(record, { name: button.dataset.statusField, value: button.dataset.statusValue }, button.dataset.confirm || 'Change this record status?', event.currentTarget.closest('.dropdown')?.querySelector('[data-bs-toggle="dropdown"]') || event.currentTarget);
+        }));
+        document.querySelectorAll(`[data-drawer-open="${drawerSelector}"]`).forEach(button => button.addEventListener('click', event => {
+            let record = {};
+            try { record = JSON.parse(event.currentTarget.dataset.drawerContent || '{}'); } catch {}
+            drawerReturnFocus = event.currentTarget;
+            if (drawerTitle) drawerTitle.textContent = record.action ? String(record.action).replace(/[._]/g, ' ') : 'Audit event';
+            if (drawerSubtitle) drawerSubtitle.textContent = record.created_at ? `${record.created_at} UTC` : 'Recorded event information';
+            const body = formDrawer.querySelector('[data-drawer-body]');
+            if (body) {
+                body.replaceChildren();
+                const list = document.createElement('dl');
+                list.className = 'audit-detail-list';
+                const fields = [['Acting user', record.actor], ['User ID', record.user_id], ['Current role', record.role], ['Action', record.action], ['Module', record.module], ['Affected record ID', record.entity_id], ['Result', record.outcome], ['Severity', record.severity], ['IP address', record.ip_address], ['Date and time (UTC)', record.created_at]];
+                fields.forEach(([label, value]) => {
+                    const row = document.createElement('div');
+                    const term = document.createElement('dt');
+                    const definition = document.createElement('dd');
+                    term.textContent = label;
+                    definition.textContent = value === null || value === undefined || value === '' ? 'Not recorded' : String(value);
+                    row.append(term, definition);
+                    list.append(row);
+                });
+                body.append(list);
+                const details = record.details;
+                const detailSection = document.createElement('section');
+                detailSection.className = 'audit-json-details';
+                const heading = document.createElement('h3');
+                heading.textContent = 'Event details';
+                detailSection.append(heading);
+                if (!details || typeof details !== 'object' || Object.keys(details).length === 0) {
+                    const empty = document.createElement('p');
+                    empty.textContent = 'No additional event details were recorded.';
+                    detailSection.append(empty);
+                } else {
+                    ['before', 'after'].forEach(key => {
+                        if (!(key in details)) return;
+                        const section = document.createElement('section');
+                        const subheading = document.createElement('h4');
+                        const pre = document.createElement('pre');
+                        subheading.textContent = key === 'before' ? 'Previous values' : 'New values';
+                        pre.textContent = JSON.stringify(details[key], null, 2);
+                        section.append(subheading, pre);
+                        detailSection.append(section);
+                    });
+                    const remaining = Object.fromEntries(Object.entries(details).filter(([key]) => !['before', 'after'].includes(key)));
+                    if (Object.keys(remaining).length > 0) {
+                        const pre = document.createElement('pre');
+                        pre.textContent = JSON.stringify(remaining, null, 2);
+                        detailSection.append(pre);
+                    }
+                }
+                body.append(detailSection);
+            }
+            window.bootstrap.Offcanvas.getOrCreateInstance(formDrawer).show();
+        }))
+        drawerForm?.addEventListener('input', syncDrawerState);
+        drawerForm?.addEventListener('change', syncDrawerState);
+        drawerForm?.querySelectorAll('[data-uppercase]').forEach(field => field.addEventListener('input', () => {
+            const start = field.selectionStart;
+            const end = field.selectionEnd;
+            field.value = field.value.toUpperCase();
+            field.setSelectionRange(start, end);
+        }));
+        formDrawer.addEventListener('hide.bs.offcanvas', event => {
+            if (formValues() !== initialValues && !window.confirm('Discard unsaved changes?')) event.preventDefault();
+        });
+        formDrawer.addEventListener('shown.bs.offcanvas', () => {
+            (formDrawer.querySelector('.is-invalid') || formDrawer.querySelector('input:not([type="hidden"]), select, textarea') || formDrawer.querySelector('[data-bs-dismiss="offcanvas"]') || formDrawer)?.focus();
+        });
+        formDrawer.addEventListener('hidden.bs.offcanvas', () => {
+            if (drawerReturnFocus instanceof HTMLElement && drawerReturnFocus.isConnected) drawerReturnFocus.focus();
+        });
+        drawerForm?.addEventListener('submit', event => {
+            if (drawerForm && !drawerForm.checkValidity()) {
+                event.preventDefault();
+                drawerForm.reportValidity();
+                return;
+            }
+            if (drawerForm?.dataset.confirmEdit && editMode && !window.confirm(drawerForm.dataset.confirmEdit)) {
+                event.preventDefault();
+                event.stopImmediatePropagation();
+            }
+        });
+        if (formDrawer.dataset.open === 'true') {
+            editMode = formDrawer.dataset.editing === 'true';
+            formDrawer.querySelectorAll('[data-drawer-mode]').forEach(modeElement => {
+                const hidden = modeElement.dataset.drawerMode !== (editMode ? 'edit' : 'add');
+                modeElement.hidden = hidden;
+                modeElement.querySelectorAll('input, select, textarea, button').forEach(field => { field.disabled = hidden; });
+            });
+            if (drawerTitle) drawerTitle.textContent = `${editMode ? 'Edit' : 'Add'} ${formDrawer.dataset.recordLabel}`;
+            if (saveButton) {
+                const label = saveButton.querySelector('[data-announcement-submit-label]');
+                if (label && (editMode || !drawerForm?.querySelector('[data-announcement-mode]:checked'))) label.textContent = editMode ? saveButton.dataset.editLabel : saveButton.dataset.addLabel;
+                else if (!label) saveButton.textContent = editMode ? saveButton.dataset.editLabel : saveButton.dataset.addLabel;
+            }
+            initialValues = '';
+            syncDrawerState();
+            window.bootstrap.Offcanvas.getOrCreateInstance(formDrawer).show();
+        }
+    });
+
     document.querySelectorAll('[data-page-size-select]').forEach(select => select.addEventListener('change', () => {
         const url = new URL(window.location.href);
         url.searchParams.set(select.dataset.pageSizeSelect, select.value);
@@ -219,6 +404,7 @@
     }));
 
     document.querySelectorAll('form[data-submit-once]').forEach(form => form.addEventListener('submit', event => {
+        if (event.defaultPrevented) return;
         const submitButton = event.submitter instanceof HTMLElement && event.submitter.matches('button[type="submit"], input[type="submit"]')
             ? event.submitter
             : form.querySelector('button[type="submit"]:not(:disabled), input[type="submit"]:not(:disabled)');
@@ -598,9 +784,34 @@
             }
         });
 
+        sidebar.querySelectorAll('[data-sidebar-group-toggle]').forEach(groupToggle => {
+            const group = groupToggle.closest('[data-sidebar-group]');
+            const groupPanel = document.getElementById(groupToggle.getAttribute('aria-controls'));
+            if (!group || !groupPanel) return;
+            const storageKey = `admitflow.sidebar.${group.dataset.sidebarGroup}`;
+            let storedExpanded = null;
+            try {
+                storedExpanded = window.localStorage.getItem(storageKey);
+            } catch {}
+            const initiallyExpanded = group.dataset.activeGroup === 'true' || storedExpanded === 'true';
+            const setExpanded = (expanded, persist = false) => {
+                groupToggle.setAttribute('aria-expanded', String(expanded));
+                groupPanel.hidden = !expanded;
+                if (persist) {
+                    try {
+                        window.localStorage.setItem(storageKey, String(expanded));
+                    } catch {}
+                }
+            };
+            setExpanded(initiallyExpanded);
+            groupToggle.addEventListener('click', () => {
+                setExpanded(groupToggle.getAttribute('aria-expanded') !== 'true', true);
+            });
+        });
+
         const updateAnchorSelection = () => {
             const applicationsLink = sidebar.querySelector('[data-sidebar-link="Applications"]');
-            sidebar.querySelectorAll('.app-sidebar-link').forEach(link => {
+            sidebar.querySelectorAll('.app-sidebar-link, .app-sidebar-sublink').forEach(link => {
                 link.classList.remove('is-active');
                 link.removeAttribute('aria-current');
             });
@@ -613,6 +824,22 @@
                     link.classList.add('is-active');
                     link.setAttribute('aria-current', 'page');
                 });
+                const childLinks = [...sidebar.querySelectorAll('[data-sidebar-child]')];
+                const currentLocation = window.location.pathname + window.location.hash;
+                const activeChild = childLinks.find(link => link.dataset.sidebarChild === currentLocation)
+                    || (window.location.hash === '' ? childLinks.find(link => new URL(link.href).pathname === window.location.pathname) : null);
+                if (activeChild) {
+                    activeChild.classList.add('is-active');
+                    activeChild.setAttribute('aria-current', 'location');
+                    const group = activeChild.closest('[data-sidebar-group]');
+                    const groupToggle = group?.querySelector('[data-sidebar-group-toggle]');
+                    const groupPanel = groupToggle ? document.getElementById(groupToggle.getAttribute('aria-controls')) : null;
+                    if (groupToggle && groupPanel) {
+                        groupToggle.classList.add('is-active');
+                        groupToggle.setAttribute('aria-expanded', 'true');
+                        groupPanel.hidden = false;
+                    }
+                }
             }
         };
         updateAnchorSelection();

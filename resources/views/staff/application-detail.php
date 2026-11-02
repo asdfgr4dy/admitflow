@@ -1,5 +1,6 @@
 <?php
 $statusLabels = ['submitted' => 'Submitted', 'in_screening' => 'In screening', 'documents_incomplete' => 'Documents incomplete', 'interview_scheduled' => 'Interview scheduled', 'accepted' => 'Accepted', 'declined' => 'Declined', 'enrolled' => 'Enrolled'];
+$applicationQueuePath = $user['role'] === 'admin' ? '/admin/applications' : '/staff/applications';
 $historyFilters = $application['history_filters'] ?? ['history_q' => '', 'history_status' => '', 'history_start_date' => '', 'history_end_date' => ''];
 $historyDatePreset = in_array($historyFilters['history_date_range'], ['last7', 'last30', 'custom'], true) ? $historyFilters['history_date_range'] : ($historyFilters['history_start_date'] !== '' || $historyFilters['history_end_date'] !== '' ? 'custom' : '');
 $documentHistoryFilters = $application['document_history_filters'] ?? ['document_history_q' => '', 'document_history_status' => '', 'document_history_start_date' => '', 'document_history_end_date' => '', 'document_history_date_range' => ''];
@@ -18,8 +19,9 @@ $renderOtherHistoryState = static function (array $excludedKeys) use ($historySt
 };
 ?>
 <section class="staff-wrap container-xl staff-review-page">
-    <div class="detail-back"><a class="text-link" href="/staff"><i class="bi bi-arrow-left" aria-hidden="true"></i> Back to queue</a></div>
-    <div class="staff-heading detail-heading"><div><p class="eyebrow">Application review · <?= e($application['reference_number']) ?></p><h1><?= e($application['full_name']) ?></h1><p><?= e($application['program_name'] ?? 'Program not selected') ?> · <?= e($application['year_label'] ?? 'Academic year not selected') ?></p></div><span class="status-pill status-<?= e($application['status']) ?>"><?= e($statusLabels[$application['status']] ?? $application['status']) ?></span></div>
+    <nav class="detail-breadcrumb" aria-label="Breadcrumb"><a href="<?= e($applicationQueuePath) ?>">Application Queue</a><span aria-hidden="true">/</span><span aria-current="page">Application review</span></nav>
+    <div class="detail-back"><a class="text-link" href="<?= e($applicationQueuePath) ?>"><i class="bi bi-arrow-left" aria-hidden="true"></i> Back to Queue</a></div>
+    <div class="staff-heading detail-heading"><div><p class="eyebrow">Application #<?= (int) $application['id'] ?> · <?= e($application['reference_number']) ?></p><h1><?= e($application['full_name']) ?></h1><p><?= e($application['program_name'] ?? 'Program not selected') ?> · <?= e($application['year_label'] ?? 'Academic year not selected') ?><?php if (!empty($application['submitted_at'])): ?> · Submitted <?= e(date('M j, Y', strtotime($application['submitted_at'] . ' UTC'))) ?><?php endif; ?></p></div><span class="status-pill status-<?= e($application['status']) ?>"><?= e($statusLabels[$application['status']] ?? $application['status']) ?></span></div>
     <form method="get" action="<?= e('/staff/application/' . (int) $application['id']) ?>" class="filter-bar" data-auto-filter-form data-page-params="history_page" data-filter-target="status-history-results">
         <input type="hidden" name="per_page" value="<?= (int) ($application['history_pagination']['page_size'] ?? 20) ?>">
         <?php $renderOtherHistoryState(['history_q', 'history_status', 'history_start_date', 'history_end_date', 'history_date_range', 'history_page']); ?>
