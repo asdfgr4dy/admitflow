@@ -824,6 +824,12 @@ try {
                     flash('success', 'Screening note added.');
                     redirect('/staff/application/' . (int) $_POST['application_id']);
                 }
+                if ($path === '/staff/application/claim') {
+                    $applicationId = (int) ($_POST['application_id'] ?? 0);
+                    $claim = StaffService::claimApplication($database, $user, $applicationId);
+                    flash($claim['ok'] ? 'success' : 'warning', $claim['message']);
+                    redirect('/staff/application/' . $applicationId);
+                }
                 if ($path === '/staff/application/assign') {
                     StaffService::assignReviewer($database, $user, (int) ($_POST['application_id'] ?? 0), (int) ($_POST['reviewer_id'] ?? 0));
                     flash('success', 'Reviewer assignment saved.');
@@ -903,6 +909,9 @@ try {
                     redirect('/staff/backups');
                 }
                 $applicationId = (int) ($_POST['application_id'] ?? 0);
+                if ($path === '/staff/application/claim' && $applicationId > 0) {
+                    redirect('/staff/application/' . $applicationId);
+                }
                 if ($applicationId > 0 && in_array($path, ['/staff/interview/save', '/staff/interview/reschedule', '/staff/interview/update', '/staff/enrollment/checklist'], true)) {
                     redirect('/staff/application/' . $applicationId);
                 }

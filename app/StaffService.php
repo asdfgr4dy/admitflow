@@ -176,6 +176,7 @@ final class StaffService
             'programs' => $database->query('SELECT id, name FROM academic_programs ORDER BY name')->fetchAll(),
             'years' => $database->query('SELECT id, label FROM academic_years ORDER BY starts_on DESC')->fetchAll(),
             'reviewers' => $database->query('SELECT id, full_name FROM users WHERE role = \'reviewer\' AND account_status = \'active\' ORDER BY full_name')->fetchAll(),
+            'administrators' => $database->query('SELECT id, full_name FROM users WHERE role = \'admin\' AND account_status = \'active\' ORDER BY full_name')->fetchAll(),
         ];
     }
 
@@ -426,10 +427,10 @@ final class StaffService
             throw new DomainException('The report start date must not be later than its end date.');
         }
         $reviewerId = trim((string) ($input['reviewer_id'] ?? ''));
-        if ($reviewerId !== '' && (!ctype_digit($reviewerId) || (int) $reviewerId < 1)) {
+        if ($allRows && $reviewerId !== '' && (!ctype_digit($reviewerId) || (int) $reviewerId < 1)) {
             throw new DomainException('Choose a valid reviewer filter.');
         }
-        if ($reviewerId !== '') {
+        if ($allRows && $reviewerId !== '') {
             $reviewerCheck = $database->prepare('SELECT COUNT(*) FROM users WHERE id = :id AND role = \'reviewer\' AND account_status = \'active\'');
             $reviewerCheck->execute(['id' => (int) $reviewerId]);
             if ((int) $reviewerCheck->fetchColumn() === 0) {
@@ -437,6 +438,20 @@ final class StaffService
             }
             $where[] = 'EXISTS (SELECT 1 FROM reviewer_assignments filter_assignment WHERE filter_assignment.application_id = a.id AND filter_assignment.reviewer_id = :filter_reviewer AND filter_assignment.unassigned_at IS NULL)';
             $parameters['filter_reviewer'] = (int) $reviewerId;
+        }
+        $assignedTo = '';
+        if (!$allRows && ($user['role'] ?? '') === 'admin') {
+            $assignedTo = trim((string) ($input['assigned_to'] ?? $reviewerId));
+            if ($assignedTo === 'unassigned') {
+                $where[] = 'NOT EXISTS (SELECT 1 FROM reviewer_assignments assigned_to_filter WHERE assigned_to_filter.application_id = a.id AND assigned_to_filter.unassigned_at IS NULL)';
+            } elseif ($assignedTo !== '') {
+                if (!ctype_digit($assignedTo) || (int) $assignedTo < 1) throw new DomainException('Choose a valid Assigned to filter.');
+                $assignedReviewer = $database->prepare('SELECT COUNT(*) FROM users WHERE id = :id AND role = \'reviewer\' AND account_status = \'active\'');
+                $assignedReviewer->execute(['id' => (int) $assignedTo]);
+                if ((int) $assignedReviewer->fetchColumn() !== 1) throw new DomainException('Choose an active reviewer for Assigned to.');
+                $where[] = 'EXISTS (SELECT 1 FROM reviewer_assignments assigned_to_filter WHERE assigned_to_filter.application_id = a.id AND assigned_to_filter.reviewer_id = :assigned_to_reviewer AND assigned_to_filter.unassigned_at IS NULL)';
+                $parameters['assigned_to_reviewer'] = (int) $assignedTo;
+            }
         }
         $completion = (string) ($input['documents'] ?? '');
         if ($completion !== '' && !in_array($completion, ['complete', 'incomplete'], true)) {
@@ -500,7 +515,7 @@ final class StaffService
             $sortDirection = 'desc';
         }
         $orderBy = $sortColumns[$sortKey] . ' ' . strtoupper($sortDirection) . ', a.id DESC';
-        $query = 'SELECT a.id, a.reference_number, a.status, a.submitted_at, u.full_name, p.name AS program_name, y.label AS year_label, (SELECT COUNT(*) FROM application_documents d WHERE d.application_id = a.id AND d.is_current = 1) AS uploaded_documents, (SELECT COUNT(*) FROM application_documents d JOIN admission_requirements verified_requirement ON verified_requirement.id = d.requirement_id WHERE d.application_id = a.id AND d.is_current = 1 AND d.review_status = \'verified\' AND verified_requirement.is_active = 1 AND verified_requirement.is_required = 1 AND (verified_requirement.academic_program_id IS NULL OR verified_requirement.academic_program_id = a.academic_program_id) AND (verified_requirement.academic_year_id IS NULL OR verified_requirement.academic_year_id = a.academic_year_id)) AS verified_documents, (SELECT COUNT(*) FROM admission_requirements r WHERE r.is_active = 1 AND r.is_required = 1 AND (r.academic_program_id IS NULL OR r.academic_program_id = a.academic_program_id) AND (r.academic_year_id IS NULL OR r.academic_year_id = a.academic_year_id)) AS required_documents, COALESCE(reviewer.full_name, historical_reviewer.full_name, (SELECT historical_document_reviewer.full_name FROM application_documents historical_document JOIN document_reviews historical_document_review ON historical_document_review.document_id = historical_document.id JOIN users historical_document_reviewer ON historical_document_reviewer.id = historical_document_review.reviewer_id AND historical_document_reviewer.role = \'reviewer\' WHERE historical_document.application_id = a.id ORDER BY historical_document_review.reviewed_at ASC, historical_document_review.id ASC LIMIT 1)) AS reviewer_name, CASE WHEN reviewer.id IS NULL AND (historical_reviewer.id IS NOT NULL OR EXISTS (SELECT 1 FROM application_documents historical_document JOIN document_reviews historical_document_review ON historical_document_review.document_id = historical_document.id JOIN users historical_document_reviewer ON historical_document_reviewer.id = historical_document_review.reviewer_id AND historical_document_reviewer.role = \'reviewer\' WHERE historical_document.application_id = a.id)) THEN 1 ELSE 0 END AS reviewer_is_historical' . $joins . 'WHERE ' . $rowWhereSql . ' ORDER BY ' . $orderBy . ' LIMIT ' . $pageSize . ' OFFSET ' . $pagination['offset'];
+        $query = 'SELECT a.id, a.reference_number, a.status, a.submitted_at, u.full_name, p.name AS program_name, y.label AS year_label, active_assignment.reviewer_id AS assigned_reviewer_id, (SELECT COUNT(*) FROM application_documents d WHERE d.application_id = a.id AND d.is_current = 1) AS uploaded_documents, (SELECT COUNT(*) FROM application_documents d JOIN admission_requirements verified_requirement ON verified_requirement.id = d.requirement_id WHERE d.application_id = a.id AND d.is_current = 1 AND d.review_status = \'verified\' AND verified_requirement.is_active = 1 AND verified_requirement.is_required = 1 AND (verified_requirement.academic_program_id IS NULL OR verified_requirement.academic_program_id = a.academic_program_id) AND (verified_requirement.academic_year_id IS NULL OR verified_requirement.academic_year_id = a.academic_year_id)) AS verified_documents, (SELECT COUNT(*) FROM admission_requirements r WHERE r.is_active = 1 AND r.is_required = 1 AND (r.academic_program_id IS NULL OR r.academic_program_id = a.academic_program_id) AND (r.academic_year_id IS NULL OR r.academic_year_id = a.academic_year_id)) AS required_documents, COALESCE(reviewer.full_name, historical_reviewer.full_name, (SELECT historical_document_reviewer.full_name FROM application_documents historical_document JOIN document_reviews historical_document_review ON historical_document_review.document_id = historical_document.id JOIN users historical_document_reviewer ON historical_document_reviewer.id = historical_document_review.reviewer_id AND historical_document_reviewer.role = \'reviewer\' WHERE historical_document.application_id = a.id ORDER BY historical_document_review.reviewed_at ASC, historical_document_review.id ASC LIMIT 1)) AS reviewer_name, CASE WHEN reviewer.id IS NULL AND (historical_reviewer.id IS NOT NULL OR EXISTS (SELECT 1 FROM application_documents historical_document JOIN document_reviews historical_document_review ON historical_document_review.document_id = historical_document.id JOIN users historical_document_reviewer ON historical_document_reviewer.id = historical_document_review.reviewer_id AND historical_document_reviewer.role = \'reviewer\' WHERE historical_document.application_id = a.id)) THEN 1 ELSE 0 END AS reviewer_is_historical' . $joins . 'WHERE ' . $rowWhereSql . ' ORDER BY ' . $orderBy . ' LIMIT ' . $pageSize . ' OFFSET ' . $pagination['offset'];
         $statement = $database->prepare($query);
         $statement->execute($rowParameters);
         $summary = ['statuses' => [], 'programs' => [], 'years' => [], 'reviewed' => 0, 'average_review_hours' => null, 'documents_uploaded' => 0, 'documents_verified' => 0, 'documents_required' => 0];
@@ -532,8 +547,14 @@ final class StaffService
         }
 
         $filters = $input;
-        if (!$allRows && ($user['role'] ?? '') === 'admin') $filters['archived'] = $archivedFilter;
-        else unset($filters['archived']);
+        if (!$allRows && ($user['role'] ?? '') === 'admin') {
+            $filters['archived'] = $archivedFilter;
+            $filters['assigned_to'] = $assignedTo;
+            unset($filters['reviewer_id']);
+        } else {
+            unset($filters['archived'], $filters['assigned_to']);
+            if (!$allRows) unset($filters['reviewer_id']);
+        }
         $filters['date_range'] = $datePreset;
         $filters['drilldown'] = $drilldown;
         $filters['report_sort'] = $sortKey;
@@ -898,9 +919,13 @@ final class StaffService
         }
         $application['is_archived'] = $application['deleted_at'] !== null;
 
-        $assignment = $database->prepare('SELECT u.id, u.full_name FROM reviewer_assignments ra JOIN users u ON u.id = ra.reviewer_id WHERE ra.application_id = :application_id AND ra.unassigned_at IS NULL ORDER BY ra.id DESC LIMIT 1');
+        $assignment = $database->prepare('SELECT ra.id AS assignment_id, u.id, u.full_name FROM reviewer_assignments ra LEFT JOIN users u ON u.id = ra.reviewer_id AND u.role = \'reviewer\' AND u.account_status = \'active\' WHERE ra.application_id = :application_id AND ra.unassigned_at IS NULL ORDER BY ra.id DESC LIMIT 1');
         $assignment->execute(['application_id' => $applicationId]);
-        $application['assigned_reviewer'] = $assignment->fetch() ?: null;
+        $assignmentRow = $assignment->fetch();
+        $application['has_active_assignment'] = is_array($assignmentRow);
+        $application['assigned_reviewer'] = is_array($assignmentRow) && $assignmentRow['id'] !== null
+            ? ['id' => (int) $assignmentRow['id'], 'full_name' => $assignmentRow['full_name']]
+            : null;
 
         $documents = $database->prepare('SELECT r.name, d.id AS document_id, d.original_name, d.review_status, d.uploaded_at, latest.feedback FROM admission_requirements r LEFT JOIN application_documents d ON d.requirement_id = r.id AND d.application_id = :application_id AND d.is_current = 1 LEFT JOIN (SELECT document_id, feedback FROM document_reviews WHERE id IN (SELECT MAX(id) FROM document_reviews GROUP BY document_id)) latest ON latest.document_id = d.id WHERE r.is_active = 1 AND r.is_required = 1 AND (r.academic_program_id IS NULL OR r.academic_program_id = :program_id) AND (r.academic_year_id IS NULL OR r.academic_year_id = :year_id) ORDER BY r.sort_order, r.name');
         $documents->execute(['application_id' => $applicationId, 'program_id' => $application['academic_program_id'], 'year_id' => $application['academic_year_id']]);
@@ -1266,25 +1291,140 @@ final class StaffService
         }
     }
 
+    public static function canClaimApplication(array $application): bool
+    {
+        return ($application['deleted_at'] ?? null) === null
+            && in_array($application['status'] ?? '', ['submitted', 'in_screening', 'documents_incomplete', 'interview_scheduled'], true);
+    }
+
+    public static function claimApplication(PDO $database, array $user, int $applicationId): array
+    {
+        if (($user['role'] ?? '') !== 'reviewer' || (int) ($user['id'] ?? 0) < 1) {
+            throw new DomainException('Only an active reviewer can claim applications.');
+        }
+        if ($applicationId < 1) {
+            return ['ok' => false, 'message' => 'This application is not available to claim.'];
+        }
+
+        self::beginAssignmentTransaction($database);
+        try {
+            self::lockAssignmentApplication($database, $applicationId);
+            $lock = $database->getAttribute(PDO::ATTR_DRIVER_NAME) === 'mysql' ? ' FOR UPDATE' : '';
+            $applicationQuery = $database->prepare('SELECT id, reference_number, status, deleted_at FROM applications WHERE id = :application_id' . $lock);
+            $applicationQuery->execute(['application_id' => $applicationId]);
+            $application = $applicationQuery->fetch();
+            if (!is_array($application) || !self::canClaimApplication($application)) {
+                $database->rollBack();
+                return ['ok' => false, 'message' => 'This application is not available to claim.'];
+            }
+
+            $assignments = $database->prepare('SELECT id FROM reviewer_assignments WHERE application_id = :application_id AND unassigned_at IS NULL ORDER BY id DESC' . $lock);
+            $assignments->execute(['application_id' => $applicationId]);
+            if ($assignments->fetchColumn() !== false) {
+                $database->rollBack();
+                return ['ok' => false, 'message' => 'This application was just claimed by another reviewer.'];
+            }
+
+            $reviewerQuery = $database->prepare('SELECT id, full_name FROM users WHERE id = :reviewer_id AND role = \'reviewer\' AND account_status = \'active\'' . $lock);
+            $reviewerQuery->execute(['reviewer_id' => (int) $user['id']]);
+            $reviewer = $reviewerQuery->fetch();
+            if (!is_array($reviewer)) {
+                $database->rollBack();
+                throw new DomainException('Only an active reviewer can claim applications.');
+            }
+
+            $insert = $database->prepare('INSERT INTO reviewer_assignments (application_id, reviewer_id, assigned_by) VALUES (:application_id, :reviewer_id, :assigned_by)');
+            $insert->execute(['application_id' => $applicationId, 'reviewer_id' => (int) $reviewer['id'], 'assigned_by' => (int) $reviewer['id']]);
+            AuditLog::record($database, $user, 'application.claimed', 'application', $applicationId, 'success', [
+                'reference_number' => (string) ($application['reference_number'] ?? ''),
+                'reviewer_id' => (int) $reviewer['id'],
+                'reviewer_name' => (string) $reviewer['full_name'],
+            ], 'notice');
+            $database->commit();
+
+            return ['ok' => true, 'message' => 'Application claimed and assigned to you.'];
+        } catch (Throwable $error) {
+            if ($database->inTransaction()) $database->rollBack();
+            throw $error;
+        }
+    }
+
+    private static function beginAssignmentTransaction(PDO $database): void
+    {
+        if ($database->getAttribute(PDO::ATTR_DRIVER_NAME) === 'sqlite') {
+            $database->exec('PRAGMA busy_timeout = 5000');
+        }
+        $database->beginTransaction();
+    }
+
+    private static function lockAssignmentApplication(PDO $database, int $applicationId): void
+    {
+        if ($database->getAttribute(PDO::ATTR_DRIVER_NAME) !== 'sqlite') return;
+        $lock = $database->prepare('UPDATE applications SET id = id WHERE id = :application_id');
+        $lock->execute(['application_id' => $applicationId]);
+    }
+
+    private static function assertInterviewInterviewer(PDO $database, array $user, array $application, int $interviewerId, bool $lock): void
+    {
+        $lockSuffix = $lock && $database->getAttribute(PDO::ATTR_DRIVER_NAME) === 'mysql' ? ' FOR UPDATE' : '';
+        $assignment = $database->prepare('SELECT reviewer_id FROM reviewer_assignments WHERE application_id = :application_id AND unassigned_at IS NULL ORDER BY id DESC LIMIT 1' . $lockSuffix);
+        $assignment->execute(['application_id' => (int) $application['id']]);
+        $assignedReviewerId = $assignment->fetchColumn();
+
+        if (($user['role'] ?? '') === 'reviewer') {
+            if ($assignedReviewerId === false || (int) $assignedReviewerId !== (int) ($user['id'] ?? 0) || $interviewerId !== (int) $user['id']) {
+                throw new DomainException('Only the application’s assigned reviewer can be selected as its interviewer. Assign a reviewer first.');
+            }
+            $interviewer = $database->prepare('SELECT id FROM users WHERE id = :id AND role = \'reviewer\' AND account_status = \'active\'' . $lockSuffix);
+            $interviewer->execute(['id' => $interviewerId]);
+            if ($interviewer->fetchColumn() === false) throw new DomainException('Choose an active assigned reviewer.');
+            return;
+        }
+
+        if (($user['role'] ?? '') !== 'admin') {
+            throw new DomainException('Administrator access is required to select an interviewer.');
+        }
+
+        if ($assignedReviewerId !== false && (int) $assignedReviewerId === $interviewerId) {
+            $interviewer = $database->prepare('SELECT id FROM users WHERE id = :id AND role = \'reviewer\' AND account_status = \'active\'' . $lockSuffix);
+        } else {
+            $interviewer = $database->prepare('SELECT id FROM users WHERE id = :id AND role = \'admin\' AND account_status = \'active\'' . $lockSuffix);
+        }
+        $interviewer->execute(['id' => $interviewerId]);
+        if ($interviewer->fetchColumn() === false) {
+            throw new DomainException($assignedReviewerId === false
+                ? 'Assign a reviewer before selecting a non-administrator interviewer.'
+                : 'Choose the assigned reviewer or an active administrator.');
+        }
+    }
+
     public static function assignReviewer(PDO $database, array $user, int $applicationId, int $reviewerId): void
     {
         if ($user['role'] !== 'admin') {
             throw new DomainException('Administrator access is required to assign reviewers.');
         }
-        if (self::detail($database, $user, $applicationId) === null) {
-            throw new DomainException('That application is not available.');
-        }
-        $reviewerQuery = $database->prepare('SELECT id, full_name FROM users WHERE id = :id AND role = \'reviewer\' AND account_status = \'active\'');
-        $reviewerQuery->execute(['id' => $reviewerId]);
-        $reviewer = $reviewerQuery->fetch();
-        if (!is_array($reviewer)) {
-            throw new DomainException('Choose an active admissions reviewer.');
-        }
+        if ($applicationId < 1 || $reviewerId < 1) throw new DomainException('Choose an active application and reviewer.');
 
-        $database->beginTransaction();
+        self::beginAssignmentTransaction($database);
         try {
-            $unassign = $database->prepare('UPDATE reviewer_assignments SET unassigned_at = UTC_TIMESTAMP() WHERE application_id = :application_id AND unassigned_at IS NULL');
-            $unassign->execute(['application_id' => $applicationId]);
+            self::lockAssignmentApplication($database, $applicationId);
+            $lock = $database->getAttribute(PDO::ATTR_DRIVER_NAME) === 'mysql' ? ' FOR UPDATE' : '';
+            $applicationQuery = $database->prepare('SELECT id FROM applications WHERE id = :application_id AND deleted_at IS NULL AND status <> \'draft\'' . $lock);
+            $applicationQuery->execute(['application_id' => $applicationId]);
+            if ($applicationQuery->fetchColumn() === false) throw new DomainException('That application is not available.');
+
+            $activeAssignments = $database->prepare('SELECT id FROM reviewer_assignments WHERE application_id = :application_id AND unassigned_at IS NULL ORDER BY id DESC' . $lock);
+            $activeAssignments->execute(['application_id' => $applicationId]);
+            $activeIds = array_map('intval', $activeAssignments->fetchAll(PDO::FETCH_COLUMN));
+            $reviewerQuery = $database->prepare('SELECT id FROM users WHERE id = :id AND role = \'reviewer\' AND account_status = \'active\'' . $lock);
+            $reviewerQuery->execute(['id' => $reviewerId]);
+            if ($reviewerQuery->fetchColumn() === false) throw new DomainException('Choose an active admissions reviewer.');
+
+            $now = $database->getAttribute(PDO::ATTR_DRIVER_NAME) === 'mysql' ? 'UTC_TIMESTAMP()' : 'CURRENT_TIMESTAMP';
+            if ($activeIds !== []) {
+                $unassign = $database->prepare('UPDATE reviewer_assignments SET unassigned_at = ' . $now . ' WHERE application_id = :application_id AND unassigned_at IS NULL');
+                $unassign->execute(['application_id' => $applicationId]);
+            }
             $assign = $database->prepare('INSERT INTO reviewer_assignments (application_id, reviewer_id, assigned_by) VALUES (:application_id, :reviewer_id, :assigned_by)');
             $assign->execute(['application_id' => $applicationId, 'reviewer_id' => $reviewerId, 'assigned_by' => $user['id']]);
             $notification = $database->prepare('INSERT INTO notifications (user_id, type, title, message, related_type, related_id) VALUES (:user_id, \'review_assignment\', \'Application assigned\', :message, \'application\', :application_id)');
@@ -1318,13 +1458,6 @@ final class StaffService
         if (mb_strlen($instructions) > 1000) {
             throw new DomainException('Interview instructions must be 1,000 characters or fewer.');
         }
-        $reviewer = $database->prepare('SELECT id, full_name FROM users WHERE id = :id AND role IN (\'reviewer\', \'admin\') AND account_status = \'active\'');
-        $reviewer->execute(['id' => $interviewerId]);
-        $interviewer = $reviewer->fetch();
-        if (!is_array($interviewer)) {
-            throw new DomainException('Choose an active interviewer.');
-        }
-
         $startsUtc = $starts->setTimezone(new DateTimeZone('UTC'))->format('Y-m-d H:i:s');
         $endsUtc = $ends->setTimezone(new DateTimeZone('UTC'))->format('Y-m-d H:i:s');
         $database->beginTransaction();
@@ -1340,11 +1473,7 @@ final class StaffService
             if (!StatusTransitionPolicy::allows($lockedStatus, 'interview_scheduled', $user['role'])) {
                 throw new DomainException('The application cannot be scheduled for an interview from its current status.');
             }
-            $lockInterviewer = $database->prepare('SELECT id FROM users WHERE id = :id AND role IN (\'reviewer\', \'admin\') AND account_status = \'active\'' . ($database->getAttribute(PDO::ATTR_DRIVER_NAME) === 'mysql' ? ' FOR UPDATE' : ''));
-            $lockInterviewer->execute(['id' => $interviewerId]);
-            if (!$lockInterviewer->fetchColumn()) {
-                throw new DomainException('The interviewer account is no longer active.');
-            }
+            self::assertInterviewInterviewer($database, $user, $lockedApplication, $interviewerId, true);
             $conflictSql = 'SELECT id FROM interviews WHERE interviewer_id = :interviewer_id AND status = \'scheduled\' AND starts_at_utc < :ends_at AND ends_at_utc > :starts_at LIMIT 1' . ($database->getAttribute(PDO::ATTR_DRIVER_NAME) === 'mysql' ? ' FOR UPDATE' : '');
             $conflict = $database->prepare($conflictSql);
             $conflict->execute(['interviewer_id' => $interviewerId, 'ends_at' => $endsUtc, 'starts_at' => $startsUtc]);
@@ -1460,11 +1589,7 @@ final class StaffService
             if (!$interview->fetchColumn()) {
                 throw new DomainException('That interview is no longer scheduled. Refresh and try again.');
             }
-            $interviewer = $database->prepare('SELECT id FROM users WHERE id = :id AND role IN (\'reviewer\', \'admin\') AND account_status = \'active\'' . ($database->getAttribute(PDO::ATTR_DRIVER_NAME) === 'mysql' ? ' FOR UPDATE' : ''));
-            $interviewer->execute(['id' => $interviewerId]);
-            if (!$interviewer->fetchColumn()) {
-                throw new DomainException('Choose an active admissions interviewer.');
-            }
+            self::assertInterviewInterviewer($database, $user, $application, $interviewerId, true);
             $conflictSql = 'SELECT id FROM interviews WHERE interviewer_id = :interviewer_id AND status = \'scheduled\' AND id <> :interview_id AND starts_at_utc < :ends_at AND ends_at_utc > :starts_at LIMIT 1' . ($database->getAttribute(PDO::ATTR_DRIVER_NAME) === 'mysql' ? ' FOR UPDATE' : '');
             $conflict = $database->prepare($conflictSql);
             $conflict->execute(['interviewer_id' => $interviewerId, 'interview_id' => $interviewId, 'ends_at' => $endsUtc, 'starts_at' => $startsUtc]);

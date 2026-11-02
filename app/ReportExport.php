@@ -49,6 +49,7 @@ final class ReportExport
                 $contents[] = $item;
             }
             $contentsProperty = new ReflectionProperty(Sabberworm\CSS\CSSList\CSSList::class, 'contents');
+            $contentsProperty->setAccessible(true);
             $contentsProperty->setValue($list, $contents);
         };
         $stripPageRules($stylesheetDocument);

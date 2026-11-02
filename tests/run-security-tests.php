@@ -1395,14 +1395,14 @@ $activeAdminDetail = StaffService::detail($workflowDb, $adminUser, 2);
 $activeAdminDetailMarkup = $archiveDetailViewer($adminUser, $activeAdminDetail);
 $activeReviewerDetail = StaffService::detail($workflowDb, $reviewerOne, 2);
 $activeReviewerDetailMarkup = $archiveDetailViewer($reviewerOne, $activeReviewerDetail);
-$assert(str_contains($activeAdminDetailMarkup, 'action="/staff/application/archive"') && str_contains($activeAdminDetailMarkup, 'Archive this application? It will be hidden from active queues') && str_contains($activeAdminDetailMarkup, 'name="_csrf"') && !str_contains($activeReviewerDetailMarkup, 'action="/staff/application/archive"') && !str_contains($activeReviewerDetailMarkup, 'action="/staff/application/restore"'), 'active detail render shows CSRF-confirmed Archive to admins and no archive controls to reviewers');
+$assert(str_contains($activeAdminDetailMarkup, 'class="detail-heading-status-actions"') && str_contains($activeAdminDetailMarkup, 'action="/staff/application/archive"') && str_contains($activeAdminDetailMarkup, 'Archive this application? It will be hidden from active queues') && str_contains($activeAdminDetailMarkup, 'name="_csrf"') && !str_contains($activeReviewerDetailMarkup, 'action="/staff/application/archive"') && !str_contains($activeReviewerDetailMarkup, 'action="/staff/application/restore"'), 'active detail render shows grouped CSRF-confirmed Archive to admins and no archive controls to reviewers');
 $workflowDb->exec('UPDATE applications SET deleted_at = UTC_TIMESTAMP() WHERE id=2');
 $archivedAdminDetail = StaffService::detail($workflowDb, $adminUser, 2, false, [], true, true);
 $archivedReviewerDetail = StaffService::detail($workflowDb, $reviewerOne, 2, false, [], true, true);
 $adminArchivedDetailMarkup = $archiveDetailViewer($adminUser, $archivedAdminDetail);
 $reviewerArchivedDetailMarkup = $archivedReviewerDetail === null ? '' : $archiveDetailViewer($reviewerOne, $archivedReviewerDetail);
 $workflowDb->exec('UPDATE applications SET deleted_at = NULL WHERE id=2');
-$assert(is_array($archivedAdminDetail) && !empty($archivedAdminDetail['is_archived']) && str_contains($adminArchivedDetailMarkup, 'action="/staff/application/restore"') && str_contains($adminArchivedDetailMarkup, 'Restore this application to active queues') && $archivedReviewerDetail === null && $reviewerArchivedDetailMarkup === '', 'administrator can render archived detail with Restore while a reviewer cannot load it even with archived mode requested');
+$assert(is_array($archivedAdminDetail) && !empty($archivedAdminDetail['is_archived']) && str_contains($adminArchivedDetailMarkup, 'class="detail-heading-status-actions"') && str_contains($adminArchivedDetailMarkup, 'action="/staff/application/restore"') && str_contains($adminArchivedDetailMarkup, 'Restore this application to active queues') && $archivedReviewerDetail === null && $reviewerArchivedDetailMarkup === '', 'administrator can render grouped Restore on archived detail while a reviewer cannot load it even with archived mode requested');
 $assert(StaffService::authorizedDocument($workflowDb, ['id' => 1, 'role' => 'student'], 1) === null, 'student cannot use staff document authorization service');
 $assignmentDenied = false;
 try {
@@ -1582,7 +1582,7 @@ $interviewStartLater = (new DateTimeImmutable('+3 days', $manila))->setTime(13, 
 $interviewEndLater = (new DateTimeImmutable('+3 days', $manila))->setTime(14, 0)->format('Y-m-d\\TH:i');
 $scheduledInterview = false;
 try {
-    StaffService::scheduleInterview($workflowDb, $reviewerTwo, 3, 3, $interviewStart, $interviewEnd, 'Test meeting instructions');
+    StaffService::scheduleInterview($workflowDb, $reviewerTwo, 3, 4, $interviewStart, $interviewEnd, 'Test meeting instructions');
     $scheduledInterview = true;
 } catch (Throwable) {
 }
@@ -1615,13 +1615,13 @@ try {
 }
 $assert($rescheduledInterview && (int) $workflowDb->query('SELECT interviewer_id FROM interviews WHERE id=' . $interviewId)->fetchColumn() === 4, 'authorized reviewer can reschedule and reassign an active interview (' . $rescheduleError . ')');
 $assert((int) $workflowDb->query("SELECT COUNT(*) FROM notifications WHERE user_id=2 AND type='interview_rescheduled'")->fetchColumn() === 1 && (int) $workflowDb->query("SELECT COUNT(*) FROM audit_logs WHERE action='interview.rescheduled'")->fetchColumn() === 1, 'rescheduling notifies the applicant and is audit logged');
-$overlapRejected = false;
+$unrelatedInterviewerRejected = false;
 try {
-    StaffService::scheduleInterview($workflowDb, $reviewerOne, 4, 4, $interviewStartLater, $interviewEndLater, 'Overlapping schedule');
+    StaffService::scheduleInterview($workflowDb, $reviewerOne, 4, 4, $interviewStartLater, $interviewEndLater, 'Unrelated interviewer');
 } catch (DomainException) {
-    $overlapRejected = true;
+    $unrelatedInterviewerRejected = true;
 }
-$assert($overlapRejected && (int) $workflowDb->query('SELECT COUNT(*) FROM interviews WHERE application_id=4')->fetchColumn() === 0, 'interviewer overlap is rejected without inserting an interview');
+$assert($unrelatedInterviewerRejected && (int) $workflowDb->query('SELECT COUNT(*) FROM interviews WHERE application_id=4')->fetchColumn() === 0, 'reviewer cannot select an unrelated interviewer by direct service call');
 $completedInterview = false;
 $completedError = '';
 try {

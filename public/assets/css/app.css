@@ -601,6 +601,10 @@ h1 em, h2 em { color: #8B5C15; font-style: italic; }
 .academic-table th a:hover { color: #16334A; }
 .academic-table th a .bi { color: #9BA8A1; font-size: .66rem; }
 .academic-table td { padding: 10px 12px; vertical-align: middle; }
+.admin-application-page .academic-table th:last-child, .admin-application-page .academic-table td:last-child { width: 112px; min-width: 112px; }
+.application-row-actions { display: flex; min-width: 84px; flex-direction: column; align-items: stretch; justify-content: center; gap: 6px; }
+.application-row-actions form { width: 100%; margin: 0; }
+.application-row-actions .btn { display: flex; width: 100%; min-height: 32px; align-items: center; justify-content: center; white-space: nowrap; }
 .academic-table td strong { color: #263746; font-weight: 700; }
 .academic-table td small { display: block; margin-top: 3px; color: #827E73; font-size: .73rem; }
 .academic-table td .status-pill { min-height: 23px; padding: 3px 8px; border-radius: 99px; font-size: .7rem; white-space: nowrap; }
@@ -643,6 +647,9 @@ h1 em, h2 em { color: #8B5C15; font-style: italic; }
 .staff-review-page .detail-back { margin-bottom: 15px; }
 .staff-review-page form.filter-bar, .staff-review-page .pagination-bar { display: none !important; }
 .staff-review-page .detail-heading { align-items: center; padding: 20px 23px; border: 1px solid #D9E4DF; border-radius: 7px; background: #FFFFFF; }
+.staff-review-page .detail-heading > div:first-child { min-width: 0; flex: 1 1 300px; }
+.staff-review-page .detail-heading-status-actions { display: flex; min-width: 0; flex: 0 1 auto; align-items: center; justify-content: flex-end; flex-wrap: wrap; gap: 10px; }
+.staff-review-page .detail-heading-status-actions form { flex: 0 0 auto; margin: 0; }
 .staff-review-page .detail-heading h1 { font-size: 2.15rem; }
 .staff-review-page .detail-grid { gap: 16px; }
 .staff-review-page .detail-main, .staff-review-page .detail-side { gap: 16px; }
@@ -1105,6 +1112,8 @@ img.document-preview-media { width: auto; max-width: 100%; height: auto; max-hei
 .application-primary-actions { display: flex; align-items: center; justify-content: flex-end; gap: 4px; min-height: 41px; }
 .application-more-filters { display: inline-flex; align-items: center; gap: 7px; min-height: 40px; white-space: nowrap; }
 .application-advanced-count { display: inline-grid; min-width: 19px; height: 19px; place-items: center; border-radius: 50%; background: #E4EFE9; color: #285C46; font-size: .7rem; font-weight: 800; }
+.application-filters .application-advanced-count { min-width: 17px; height: 17px; padding: 0 4px; border: 0; border-radius: 3px; background: #E8A83E; color: #263746; font-size: .68rem; line-height: 17px; }
+.application-filters .application-advanced-count.is-empty { display: none; }
 .application-reset { padding-right: 5px; padding-left: 5px; color: #49665A; font-size: .78rem; font-weight: 700; white-space: nowrap; }
 .application-advanced-panel { margin-top: 13px; padding: 15px 17px 17px; border: 1px solid #D7E2DC; border-left: 3px solid #6FA58D; background: #F8FAF9; }
 .application-advanced-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 13px; }
@@ -1352,6 +1361,8 @@ img.document-preview-media { width: auto; max-width: 100%; height: auto; max-hei
     .staff-wrap { padding-top: 35px; padding-bottom: 52px; }
     .staff-heading { align-items: flex-start; flex-direction: column; }
     .staff-heading h1 { font-size: 2.25rem; }
+    .staff-review-page .detail-heading { flex-direction: row; flex-wrap: wrap; }
+    .staff-review-page .detail-heading-status-actions { flex: 1 1 auto; }
     .staff-nav { flex-wrap: nowrap; overflow-x: auto; }
     .staff-nav a { flex: 0 0 auto; }
     .metric-grid { grid-template-columns: repeat(2, 1fr); margin-bottom: 38px; }
