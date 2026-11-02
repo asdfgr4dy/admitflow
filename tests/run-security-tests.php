@@ -56,7 +56,7 @@ if (!in_array('sqlite', PDO::getAvailableDrivers(), true)) {
 
 $database = new PDO('sqlite::memory:', null, null, [PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION, PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC]);
 $database->sqliteCreateFunction('UTC_TIMESTAMP', static fn (): string => gmdate('Y-m-d H:i:s'));
-$database->exec('CREATE TABLE users (id INTEGER PRIMARY KEY AUTOINCREMENT, full_name TEXT NOT NULL, email TEXT NOT NULL UNIQUE, password_hash TEXT NOT NULL, role TEXT NOT NULL, account_status TEXT NOT NULL DEFAULT \'active\', last_login_at TEXT NULL, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)');
+$database->exec('CREATE TABLE users (id INTEGER PRIMARY KEY AUTOINCREMENT, full_name TEXT NOT NULL, email TEXT NOT NULL UNIQUE, password_hash TEXT NOT NULL, role TEXT NOT NULL, account_status TEXT NOT NULL DEFAULT \'active\', must_change_password INTEGER NOT NULL DEFAULT 0, last_login_at TEXT NULL, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)');
 $database->exec('CREATE TABLE student_profiles (user_id INTEGER PRIMARY KEY, mobile_number TEXT NULL, date_of_birth TEXT NULL, address_line TEXT NULL, municipality TEXT NULL, province TEXT NULL)');
 $database->exec('CREATE TABLE password_reset_tokens (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER NOT NULL, token_hash TEXT NOT NULL UNIQUE, expires_at TEXT NOT NULL, used_at TEXT NULL, created_at TEXT DEFAULT CURRENT_TIMESTAMP)');
 $database->exec('CREATE TABLE login_attempts (id INTEGER PRIMARY KEY AUTOINCREMENT, email_normalized TEXT NOT NULL, ip_address TEXT NULL, was_successful INTEGER NOT NULL, attempted_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)');
@@ -72,11 +72,14 @@ $insertUser->execute(['name' => 'Fixture Reviewer', 'email' => 'reviewer@example
 $reviewerId = (int) $database->lastInsertId();
 $insertUser->execute(['name' => 'Fixture Admin', 'email' => 'admin@example.test', 'password_hash' => password_hash('AdminPass!2345', PASSWORD_DEFAULT), 'role' => 'admin']);
 $adminId = (int) $database->lastInsertId();
-$registrationResult = AuthService::register($database, ['full_name' => 'Audit Registration', 'email' => 'audit.registration@example.test', 'password' => 'AuditPass!23456', 'password_confirmation' => 'AuditPass!23456', 'privacy_consent' => '1']);
+$insertUser->execute(['name' => 'Legacy Account', 'email' => 'legacy@example.test', 'password_hash' => password_hash('Legacy10!!', PASSWORD_DEFAULT), 'role' => 'student']);
+$legacyUserId = (int) $database->lastInsertId();
+$registrationResult = AuthService::register($database, ['full_name' => 'Audit Registration', 'email' => 'audit.registration@example.test', 'password' => 'Secure!Entry2026', 'password_confirmation' => 'Secure!Entry2026', 'privacy_consent' => '1']);
 $registrationAudit = $database->query("SELECT user_id, actor_label, details FROM audit_logs WHERE action='account.registered' ORDER BY id DESC LIMIT 1")->fetch();
-$assert($registrationResult['ok'] && (int) $database->query("SELECT COUNT(*) FROM audit_logs WHERE action='account.registered'")->fetchColumn() === 1 && (int) $registrationAudit['user_id'] === (int) $database->query("SELECT id FROM users WHERE email='audit.registration@example.test'")->fetchColumn() && !str_contains((string) $registrationAudit['details'], 'AuditPass'), 'successful registration creates exactly one safe actor-attributed audit event');
+$assert($registrationResult['ok'] && (int) $database->query("SELECT COUNT(*) FROM audit_logs WHERE action='account.registered'")->fetchColumn() === 1 && (int) $registrationAudit['user_id'] === (int) $database->query("SELECT id FROM users WHERE email='audit.registration@example.test'")->fetchColumn() && (int) $database->query("SELECT must_change_password FROM users WHERE email='audit.registration@example.test'")->fetchColumn() === 0 && !str_contains((string) $registrationAudit['details'], 'Secure!Entry2026'), 'successful registration creates one safe audit event and leaves forced password change disabled');
 
 $assert(SecurityPolicy::csrfMatches('abc123', 'abc123'), 'valid CSRF token accepted');
+$assert(count(SecurityPolicy::passwordErrors('Legacy10!!')) > 0, 'legacy 10-character password is rejected for new password creation');
 $assert(!SecurityPolicy::csrfMatches('abc123', 'wrong'), 'invalid CSRF token rejected');
 $assert(!SecurityPolicy::csrfMatches('abc123', null), 'missing CSRF token rejected');
 $assert(SecurityPolicy::hasRole(['role' => 'admin'], ['admin']), 'authorized role accepted');
@@ -602,7 +605,7 @@ $removeRestoreFixtureTree = static function (string $path) use (&$removeRestoreF
 $removeRestoreFixtureTree($restoreTempRoot);
 $assert(SecurityPolicy::ownsRecord($userId, $userId), 'owner can access own record');
 $assert(!SecurityPolicy::ownsRecord($userId, $userTwoId), 'student cannot access another student record');
-$assert(SecurityPolicy::passwordLengthLimits() === ['min' => 10, 'max' => 200] && !SecurityPolicy::passwordLengthIsValid(str_repeat('a', 9)) && SecurityPolicy::passwordLengthIsValid(str_repeat('a', 10)) && SecurityPolicy::passwordLengthIsValid(str_repeat('a', 200)) && !SecurityPolicy::passwordLengthIsValid(str_repeat('a', 201)), 'shared password length policy exposes and validates the existing 10-to-200-byte boundaries');
+$assert(SecurityPolicy::passwordLengthLimits() === ['min' => 12, 'max' => 64, 'max_bytes' => 72] && !SecurityPolicy::passwordLengthIsValid(str_repeat('a', 11)) && SecurityPolicy::passwordLengthIsValid(str_repeat('a', 12)) && SecurityPolicy::passwordLengthIsValid(str_repeat('a', 64)) && !SecurityPolicy::passwordLengthIsValid(str_repeat('a', 65)) && !SecurityPolicy::passwordLengthIsValid(str_repeat('😀', 19)), 'shared password length policy enforces 12-to-64 Unicode characters and a separate 72-byte maximum');
 $assert(portal_path_for_user(null) === '/', 'logged-out visitor logo destination remains public homepage');
 $assert(portal_path_for_user(['role' => 'student']) === '/portal', 'student portal destination resolves correctly');
 $assert(portal_path_for_user(['role' => 'reviewer']) === '/staff', 'reviewer portal destination resolves correctly');
@@ -716,17 +719,22 @@ $assert(str_contains($passwordControllerSource, "\$_SESSION['profile_form_name']
 $assert(is_string($settingsIndexSource) && !str_contains($settingsIndexSource, $retiredThemeAttribute) && !str_contains($settingsIndexSource, $retiredDensityAttribute) && !str_contains($settingsIndexSource, $retiredPreferenceStatus) && !str_contains($settingsIndexSource, 'href="/settings/notifications"'), 'Settings landing page contains no removed appearance controls or unsupported notification-preference route');
 $assert(is_string($profileScript) && str_contains($profileScript, 'window.localStorage.getItem(storageKey)') && !str_contains($profileScript, $retiredThemeAttribute) && !str_contains($profileScript, $retiredDensityAttribute) && is_string($printStylesSource) && !str_contains($printStylesSource, 'data-resolved-theme') && !str_contains($passwordControllerSource, 'data-settings-user-id'), 'sidebar expansion may persist while removed appearance preferences have no persistence handler or theme layout hooks');
 $assert(is_string($passwordSettingsSource) && str_contains($passwordSettingsSource, 'security-settings-page') && str_contains($passwordSettingsSource, 'Security Settings') && str_contains($passwordSettingsSource, 'Protect your AdmitFlow account') && str_contains($passwordSettingsSource, 'security-settings-grid') && str_contains($passwordSettingsSource, 'name="_csrf"') && str_contains($passwordSettingsSource, 'action="/account/password"') && str_contains($passwordSettingsSource, 'name="current_password"') && str_contains($passwordSettingsSource, 'name="new_password"') && str_contains($passwordSettingsSource, 'name="password_confirmation"') && str_contains($passwordSettingsSource, 'Update Password') && str_contains($passwordSettingsSource, 'Recent sign-in attempts') && str_contains($passwordSettingsSource, 'not a list of active sessions') && str_contains($passwordSettingsSource, 'data-password-strength') && str_contains($passwordSettingsSource, 'data-password-toggle') && str_contains($passwordSettingsSource, 'data-submit-once') && is_string($passwordControllerSource) && str_contains($passwordControllerSource, 'AuthService::changePassword') && str_contains($passwordControllerSource, 'SecurityPolicy::passwordLengthLimits()'), 'Security Settings has a distinct responsive layout while preserving the CSRF-protected password flow and truthful sign-in history');
-$assert(is_string($profileScript) && str_contains($profileScript, 'new TextEncoder().encode(strengthPassword.value).length') && str_contains($profileScript, 'strengthPassword.setCustomValidity(lengthMessage)') && str_contains($profileScript, 'strengthConfirmation.setCustomValidity(matchMessage)'), 'password form field feedback matches server-side byte limits and confirmation validation');
+$assert(is_string($profileScript) && str_contains($profileScript, 'new TextEncoder().encode(normalizedValue).length <= 72') && str_contains($profileScript, 'data-password-checklist') && str_contains($profileScript, 'data-password-confirmation'), 'shared password checklist checks the normalized server byte ceiling and password confirmation');
+$assert(passwordChangeRequiredRouteAllowed('/account/password', 'GET') && passwordChangeRequiredRouteAllowed('/account/password', 'POST') && passwordChangeRequiredRouteAllowed('/logout', 'POST') && !passwordChangeRequiredRouteAllowed('/account/password', 'HEAD') && !passwordChangeRequiredRouteAllowed('/logout', 'GET') && !passwordChangeRequiredRouteAllowed('/portal', 'GET') && !passwordChangeRequiredRouteAllowed('/staff/reports', 'GET'), 'forced password change allows only password GET/POST and logout POST among authenticated routes');
 $assert(is_string($systemSettingsSource) && str_contains($systemSettingsSource, 'href="/staff/academic/programs"') && str_contains($systemSettingsSource, 'href="/staff/academic/years"') && str_contains($systemSettingsSource, 'href="/staff/academic/requirements"') && str_contains($systemSettingsSource, 'href="/staff/users/administrators"') && str_contains($systemSettingsSource, 'href="/staff/users/staff"') && str_contains($systemSettingsSource, 'href="/staff/users/students"') && str_contains($systemSettingsSource, 'href="/staff/audit"') && str_contains($systemSettingsSource, 'href="/staff/backups"') && str_contains($systemSettingsSource, '$systemInfo[\'version\']') && str_contains($systemSettingsSource, '$systemInfo[\'password_reset_smtp\']') && str_contains($systemSettingsSource, 'does not enable email notifications') && str_contains($systemSettingsSource, 'Admissions configuration') && str_contains($systemSettingsSource, 'Access and data protection'), 'System Settings links directly to the six dedicated admin pages and retains existing audit/backup routes');
+$database->exec('UPDATE users SET must_change_password = 1 WHERE id=' . $userId);
 $originalProfileName = (string) $database->query('SELECT full_name FROM users WHERE id=' . $userId)->fetchColumn();
 $invalidProfileUpdate = AccountSettingsService::updateProfileName($database, ['id' => $userId, 'full_name' => $originalProfileName, 'role' => 'student'], 'Invalid123');
 $assert(!$invalidProfileUpdate['ok'] && $database->query('SELECT full_name FROM users WHERE id=' . $userId)->fetchColumn() === $originalProfileName, 'invalid profile update preserves existing account name');
 $validProfileUpdate = AccountSettingsService::updateProfileName($database, ['id' => $userId, 'full_name' => $originalProfileName, 'role' => 'student'], 'Fixture Student Updated');
-$assert($validProfileUpdate['ok'] && $database->query('SELECT full_name FROM users WHERE id=' . $userId)->fetchColumn() === 'Fixture Student Updated' && (int) $database->query("SELECT COUNT(*) FROM audit_logs WHERE action='account.profile_updated' AND entity_id=" . $userId)->fetchColumn() === 1, 'valid self-profile name update is persisted and audited');
+$assert($validProfileUpdate['ok'] && $database->query('SELECT full_name FROM users WHERE id=' . $userId)->fetchColumn() === 'Fixture Student Updated' && (int) $database->query("SELECT COUNT(*) FROM audit_logs WHERE action='account.profile_updated' AND entity_id=" . $userId)->fetchColumn() === 1 && (int) $database->query('SELECT must_change_password FROM users WHERE id=' . $userId)->fetchColumn() === 1, 'valid self-profile name update is persisted and audited without clearing the forced-change flag');
 $profileAuditIp = $database->query("SELECT ip_address FROM audit_logs WHERE action='account.profile_updated' AND entity_id=" . $userId . ' ORDER BY id DESC LIMIT 1')->fetchColumn();
 $assert($profileAuditIp === '192.0.2.10', 'account profile-change audit event stores the direct client IP');
 $assert((string) $database->query('SELECT full_name FROM users WHERE id=' . $userTwoId)->fetchColumn() === 'Fixture Two', "profile update cannot alter another user's account");
 $staffAccount = StaffAccountService::create($database, ['id' => $adminId, 'full_name' => 'Fixture Admin', 'role' => 'admin'], 'Fixture New Reviewer', 'new.reviewer@example.test', 'reviewer');
+$staffFlagQuery = $database->prepare('SELECT must_change_password FROM users WHERE id = :user_id');
+$staffFlagQuery->execute(['user_id' => $staffAccount['user_id']]);
+$assert((int) $staffFlagQuery->fetchColumn() === 1, 'administrator-created account starts with a forced password change');
 $staffCreationAuditIp = $database->query("SELECT ip_address FROM audit_logs WHERE action='user.staff_account_created' ORDER BY id DESC LIMIT 1")->fetchColumn();
 $assert($staffCreationAuditIp === '192.0.2.10', 'staff account creation audit event stores the direct client IP');
 parse_str((string) parse_url($staffAccount['setup_path'], PHP_URL_QUERY), $setupQuery);
@@ -739,7 +747,8 @@ $staffPasswordSet = PasswordResetService::reset($database, $setupToken, 'FirstLo
 $staffPasswordReplay = PasswordResetService::reset($database, $setupToken, 'AnotherPass123', 'AnotherPass123');
 $staffPasswordQuery = $database->prepare('SELECT password_hash FROM users WHERE id = :user_id');
 $staffPasswordQuery->execute(['user_id' => $staffAccount['user_id']]);
-$assert($staffPasswordSet['ok'] && password_verify('FirstLoginPass123', (string) $staffPasswordQuery->fetchColumn()) && !$staffPasswordReplay['ok'], 'staff member can set an initial password once using the setup link');
+$staffFlagQuery->execute(['user_id' => $staffAccount['user_id']]);
+$assert($staffPasswordSet['ok'] && password_verify('FirstLoginPass123', (string) $staffPasswordQuery->fetchColumn()) && (int) $staffFlagQuery->fetchColumn() === 0 && !$staffPasswordReplay['ok'], 'staff member can set an initial password once using the setup link and reset clears forced change');
 $staffAccountViewSource = file_get_contents(dirname(__DIR__) . '/resources/views/staff/users.php');
 $assert(is_string($staffAccountViewSource) && str_contains($staffAccountViewSource, '$userCategories') && str_contains($staffAccountViewSource, 'name="role"') && str_contains($staffAccountViewSource, 'name="account_status"') && str_contains($staffAccountViewSource, 'name="q"') && str_contains($staffAccountViewSource, 'One-time password setup link') && str_contains($staffAccountViewSource, "'confirm_edit' => 'Apply this role and account-status change?'"), 'user administration exposes role/status/search filters, data-driven category sections, and existing access-change confirmation');
 $_SESSION = [];
@@ -2091,6 +2100,13 @@ $emptyCredentialAuditAfter = (int) $database->query("SELECT COUNT(*) FROM audit_
 $assert(!$emptyCredentialLogin['ok'] && $emptyCredentialAuditAfter === $emptyCredentialAuditBefore + 1, 'valid-CAPTCHA login with missing credentials is rejected and creates exactly one failure audit event');
 
 $database->exec('DELETE FROM login_attempts');
+if (session_status() !== PHP_SESSION_ACTIVE) {
+    session_start();
+}
+AuthService::newCaptcha();
+$legacyExpectedCaptcha = (string) $_SESSION['captcha_answer'];
+$legacyLogin = AuthService::login($database, ['email' => 'legacy@example.test', 'password' => 'Legacy10!!', 'captcha_answer' => $legacyExpectedCaptcha]);
+$assert($legacyLogin['ok'] && (int) $_SESSION['user']['id'] === $legacyUserId, 'existing account with a 10-character password can still log in');
 $sessionIdBeforeLogin = session_id();
 $_SESSION['captcha_answer'] = '7';
 $successfulLogin = AuthService::login($database, ['email' => 'one@example.test', 'password' => 'OldPass!2345', 'captcha_answer' => '7', 'login_type' => 'staff']);
@@ -2120,8 +2136,14 @@ $assert($delivered && is_array($deliveryCaptured) && $resetRequestAuditCount ===
 $stored = $database->query('SELECT token_hash, expires_at, used_at FROM password_reset_tokens ORDER BY id DESC LIMIT 1')->fetch();
 $assert(is_array($stored) && hash_equals($stored['token_hash'], hash('sha256', $deliveryCaptured['token'])), 'only the token hash is stored');
 $assert($stored['used_at'] === null, 'successfully delivered reset token remains unused');
+$database->exec('UPDATE users SET must_change_password = 1 WHERE id=' . $userId);
+$hashBeforeRejectedReset = (string) $database->query('SELECT password_hash FROM users WHERE id=' . $userId)->fetchColumn();
+$rejectedPolicyReset = PasswordResetService::reset($database, $deliveryCaptured['token'], 'Fixture', 'Fixture');
+$tokenAfterRejectedPolicy = $database->prepare('SELECT used_at FROM password_reset_tokens WHERE token_hash = :hash');
+$tokenAfterRejectedPolicy->execute(['hash' => hash('sha256', $deliveryCaptured['token'])]);
+$assert(!$rejectedPolicyReset['ok'] && in_array('Password must not contain your name or email address.', $rejectedPolicyReset['errors'] ?? [], true) && $tokenAfterRejectedPolicy->fetchColumn() === null && hash_equals($hashBeforeRejectedReset, (string) $database->query('SELECT password_hash FROM users WHERE id=' . $userId)->fetchColumn()), 'reset validation uses valid-token personal context and preserves its token and stored password hash on failure');
 $resetResult = PasswordResetService::reset($database, $deliveryCaptured['token'], 'ChangedPass!234', 'ChangedPass!234');
-$assert($resetResult['ok'], 'valid token resets password');
+$assert($resetResult['ok'] && (int) $database->query('SELECT must_change_password FROM users WHERE id=' . $userId)->fetchColumn() === 0, 'valid reset token changes password and clears the forced-change flag');
 $resetAuditIp = $database->query("SELECT ip_address FROM audit_logs WHERE action='auth.password_reset' ORDER BY id DESC LIMIT 1")->fetchColumn();
 $assert($resetAuditIp === '192.0.2.10', 'successful password-reset audit event stores the direct client IP');
 $assert(password_verify('ChangedPass!234', $database->query('SELECT password_hash FROM users WHERE id=' . $userId)->fetchColumn()), 'successful reset stores a password hash');
@@ -2161,14 +2183,18 @@ $assert((int) $userTwoResetRequests->fetchColumn() === PasswordResetService::REQ
 $unknownDelivery = PasswordResetService::request($database, 'missing@example.test', static fn (): bool => true);
 $assert(!$unknownDelivery, 'unknown account follows the same public success message path without creating a token');
 
-$changeResult = AuthService::changePassword($database, ['id' => $userId, 'full_name' => 'Fixture One'], 'ChangedPass!234', 'NewPass!23456', 'NewPass!23456');
+$database->exec('UPDATE users SET must_change_password = 1 WHERE id=' . $userId);
+$hashBeforeRejectedChange = (string) $database->query('SELECT password_hash FROM users WHERE id=' . $userId)->fetchColumn();
+$rejectedPolicyChange = AuthService::changePassword($database, ['id' => $userId, 'full_name' => 'Fixture One'], 'ChangedPass!234', 'weak', 'weak');
+$assert(!$rejectedPolicyChange['ok'] && (int) $database->query('SELECT must_change_password FROM users WHERE id=' . $userId)->fetchColumn() === 1 && hash_equals($hashBeforeRejectedChange, (string) $database->query('SELECT password_hash FROM users WHERE id=' . $userId)->fetchColumn()), 'failed password policy does not alter the password hash or forced-change flag');
+$changeResult = AuthService::changePassword($database, ['id' => $userId, 'full_name' => 'Fixture One'], 'ChangedPass!234', 'Nw!Qx7R#v2Lma', 'Nw!Qx7R#v2Lma');
 $changedPasswordAuditCount = (int) $database->query("SELECT COUNT(*) FROM audit_logs WHERE action='auth.password_changed' AND user_id=" . $userId)->fetchColumn();
 $assert($changedPasswordAuditCount === 1, 'successful password change is recorded exactly once');
-$assert($changeResult['ok'], 'password change succeeds with the correct current password');
-$assert(password_verify('NewPass!23456', $database->query('SELECT password_hash FROM users WHERE id=' . $userId)->fetchColumn()), 'password change stores a secure hash');
+$assert($changeResult['ok'] && (int) $database->query('SELECT must_change_password FROM users WHERE id=' . $userId)->fetchColumn() === 0, 'password change succeeds with the correct current password and clears forced change');
+$assert(password_verify('Nw!Qx7R#v2Lma', $database->query('SELECT password_hash FROM users WHERE id=' . $userId)->fetchColumn()), 'password change stores a secure hash');
 $changeToken = bin2hex(random_bytes(32));
 $insertToken->execute(['user_id' => $userId, 'hash' => hash('sha256', $changeToken), 'expires' => gmdate('Y-m-d H:i:s', time() + 1800)]);
-$changeResultAgain = AuthService::changePassword($database, ['id' => $userId, 'full_name' => 'Fixture One'], 'NewPass!23456', 'FinalPass!23456', 'FinalPass!23456');
+$changeResultAgain = AuthService::changePassword($database, ['id' => $userId, 'full_name' => 'Fixture One'], 'Nw!Qx7R#v2Lma', 'FinalPass!23456', 'FinalPass!23456');
 $tokenAfterChange = $database->prepare('SELECT used_at FROM password_reset_tokens WHERE token_hash = :hash');
 $tokenAfterChange->execute(['hash' => hash('sha256', $changeToken)]);
 $assert($changeResultAgain['ok'] && $tokenAfterChange->fetchColumn() !== null, 'password change invalidates outstanding reset tokens');

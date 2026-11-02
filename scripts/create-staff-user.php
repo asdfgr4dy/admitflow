@@ -8,6 +8,7 @@ if (PHP_SAPI !== 'cli') {
 
 require dirname(__DIR__) . '/app/Database.php';
 require_once dirname(__DIR__) . '/app/AuditLog.php';
+require_once dirname(__DIR__) . '/app/SecurityPolicy.php';
 
 $name = trim($argv[1] ?? '');
 $email = mb_strtolower(trim($argv[2] ?? ''));
@@ -28,13 +29,13 @@ try {
         }
     }
 
-    $temporaryPassword = rtrim(strtr(base64_encode(random_bytes(24)), '+/', 'AZ'), '=');
+    $temporaryPassword = SecurityPolicy::generatePassword(['name' => $name, 'email' => $email]);
     $database->beginTransaction();
-    $insert = $database->prepare('INSERT INTO users (full_name, email, password_hash, role, account_status) VALUES (:name, :email, :password_hash, :role, \'active\')');
+    $insert = $database->prepare('INSERT INTO users (full_name, email, password_hash, role, account_status, must_change_password) VALUES (:name, :email, :password_hash, :role, \'active\', 1)');
     $insert->execute([
         'name' => $name,
         'email' => $email,
-        'password_hash' => password_hash($temporaryPassword, PASSWORD_DEFAULT),
+        'password_hash' => password_hash(SecurityPolicy::normalizePassword($temporaryPassword), PASSWORD_DEFAULT),
         'role' => $role,
     ]);
     $userId = (int) $database->lastInsertId();
@@ -43,7 +44,7 @@ try {
 
     echo "Account created. Save this generated password now; it will not be shown again.\n";
     printf("Email: %s\nRole: %s\nTemporary password: %s\n", $email, $role, $temporaryPassword);
-    echo "Sign in at /staff/login and change the password when password-change support is available.\n";
+    echo "Sign in at /staff/login and change the password when prompted.\n";
 } catch (Throwable $error) {
     if (isset($database) && $database->inTransaction()) {
         $database->rollBack();

@@ -10,6 +10,7 @@ CREATE TABLE users (
     full_name VARCHAR(160) NOT NULL,
     email VARCHAR(254) NOT NULL,
     password_hash VARCHAR(255) NOT NULL,
+    must_change_password TINYINT(1) NOT NULL DEFAULT 0,
     role ENUM('student', 'reviewer', 'admin') NOT NULL DEFAULT 'student',
     account_status ENUM('active', 'inactive', 'locked') NOT NULL DEFAULT 'active',
     last_login_at DATETIME NULL,

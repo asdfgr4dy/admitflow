@@ -2,6 +2,7 @@
 declare(strict_types=1);
 
 require_once __DIR__ . '/AuditLog.php';
+require_once __DIR__ . '/SecurityPolicy.php';
 
 final class StaffAccountService
 {
@@ -20,11 +21,12 @@ final class StaffAccountService
         $expiresAt = (new DateTimeImmutable('now', new DateTimeZone('UTC')))->add(new DateInterval('PT30M'));
         $database->beginTransaction();
         try {
-            $insert = $database->prepare('INSERT INTO users (full_name, email, password_hash, role, account_status) VALUES (:name, :email, :password_hash, :role, \'active\')');
+            $initialPassword = SecurityPolicy::generatePassword(['name' => $name, 'email' => $email]);
+            $insert = $database->prepare('INSERT INTO users (full_name, email, password_hash, role, account_status, must_change_password) VALUES (:name, :email, :password_hash, :role, \'active\', 1)');
             $insert->execute([
                 'name' => $name,
                 'email' => $email,
-                'password_hash' => password_hash(bin2hex(random_bytes(32)), PASSWORD_DEFAULT),
+                'password_hash' => password_hash($initialPassword, PASSWORD_DEFAULT),
                 'role' => $role,
             ]);
             $userId = (int) $database->lastInsertId();

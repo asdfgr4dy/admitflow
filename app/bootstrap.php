@@ -142,7 +142,7 @@ function refresh_authenticated_user(PDO $database): ?array
         return null;
     }
 
-    $statement = $database->prepare('SELECT id, full_name, email, role FROM users WHERE id = :id AND account_status = \'active\' LIMIT 1');
+    $statement = $database->prepare('SELECT id, full_name, email, role, must_change_password FROM users WHERE id = :id AND account_status = \'active\' LIMIT 1');
     $statement->execute(['id' => $sessionUser['id']]);
     $user = $statement->fetch();
     if (!is_array($user)) {
@@ -156,7 +156,14 @@ function refresh_authenticated_user(PDO $database): ?array
         'full_name' => $user['full_name'],
         'email' => $user['email'],
         'role' => $user['role'],
+        'must_change_password' => (int) $user['must_change_password'],
     ];
 
     return $_SESSION['user'];
+}
+
+function passwordChangeRequiredRouteAllowed(string $path, string $method = 'GET'): bool
+{
+    return ($path === '/account/password' && in_array($method, ['GET', 'POST'], true))
+        || ($path === '/logout' && $method === 'POST');
 }

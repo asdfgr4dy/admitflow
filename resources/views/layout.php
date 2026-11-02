@@ -59,6 +59,9 @@ if ($signedInUser !== null) {
         ],
         default => [],
     };
+    if ((int) ($signedInUser['must_change_password'] ?? 0) === 1) {
+        $portalLinks = [['label' => 'Change password', 'href' => '/account/password', 'icon' => 'bi-key']];
+    }
 }
 ?>
 <?php if (!empty($standalonePrintView)): ?>

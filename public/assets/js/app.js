@@ -1515,59 +1515,86 @@
         });
     });
 
-    const password = document.querySelector('#password');
-    const confirmation = document.querySelector('#password_confirmation');
-    if (password && confirmation) {
-        const checkMatch = () => confirmation.setCustomValidity(password.value === confirmation.value ? '' : 'The password confirmation does not match.');
-        password.addEventListener('input', checkMatch);
-        confirmation.addEventListener('input', checkMatch);
-    }
+    document.querySelectorAll('[data-password-checklist]').forEach(form => {
+        const newPassword = form.querySelector('[data-password-new]');
+        const confirmation = form.querySelector('[data-password-confirmation]');
+        const checklist = form.querySelector('#password-checklist');
+        const strengthPanel = form.querySelector('[data-password-strength-panel]');
+        if (!newPassword || !checklist) return;
 
-    const strengthPassword = document.querySelector('[data-password-strength]');
-    const strengthConfirmation = document.querySelector('[data-password-confirmation]');
-    const strengthPanel = document.querySelector('[data-password-strength-panel]');
-    if (strengthPassword && strengthConfirmation && strengthPanel) {
-        const lengthRule = strengthPanel.querySelector('[data-password-rule="length"]');
-        const matchRule = strengthPanel.querySelector('[data-password-rule="match"]');
-        const meter = strengthPanel.querySelector('[data-password-strength-meter]');
-        const status = strengthPanel.querySelector('[data-password-strength-status]');
-        const lengthError = document.querySelector('[data-password-length-error]');
-        const matchError = document.querySelector('[data-password-match-error]');
-        const updateStrength = () => {
-            const byteLength = new TextEncoder().encode(strengthPassword.value).length;
-            const minimumBytes = Number(strengthPassword.dataset.minBytes);
-            const maximumBytes = Number(strengthPassword.dataset.maxBytes);
-            const lengthValid = byteLength >= minimumBytes && byteLength <= maximumBytes;
-            const matchValid = strengthConfirmation.value.length > 0 && strengthPassword.value === strengthConfirmation.value;
-            const lengthMessage = byteLength > maximumBytes
-                ? `Password must be no more than ${maximumBytes} bytes.`
-                : byteLength > 0 && byteLength < minimumBytes
-                    ? `Password must be at least ${minimumBytes} bytes.`
-                    : '';
-            const matchMessage = strengthConfirmation.value && !matchValid ? 'The confirmation does not match.' : '';
-            strengthPassword.setCustomValidity(lengthMessage);
-            strengthConfirmation.setCustomValidity(matchMessage);
-            strengthPassword.setAttribute('aria-invalid', String(Boolean(lengthMessage)));
-            strengthConfirmation.setAttribute('aria-invalid', String(Boolean(matchMessage)));
-            if (lengthError) lengthError.textContent = lengthMessage || `Use ${minimumBytes} to ${maximumBytes} bytes.`;
-            if (matchError) matchError.textContent = matchMessage;
-            lengthRule.classList.toggle('is-met', lengthValid);
-            matchRule.classList.toggle('is-met', matchValid);
-            const score = Number(lengthValid) + Number(matchValid);
-            meter.style.width = `${score * 50}%`;
-            strengthPanel.dataset.state = score === 2 ? 'ready' : strengthPassword.value.length > 0 ? 'incomplete' : 'empty';
-            status.textContent = score === 2
-                ? 'Password meets the listed requirements.'
-                : byteLength > maximumBytes
-                    ? 'Password is too long.'
-                    : byteLength > 0 && byteLength < minimumBytes
-                        ? 'Add more characters to meet the minimum length.'
-                        : strengthConfirmation.value && !matchValid
-                            ? 'The confirmation does not match yet.'
-                            : 'Enter a password to check the requirements.';
+        const updateRule = (name, evaluated, met) => {
+            const row = checklist.querySelector(`[data-password-rule="${name}"]`);
+            const state = row?.querySelector('[data-rule-state]');
+            if (!row || !state) return;
+            row.classList.toggle('is-met', evaluated && met);
+            row.classList.toggle('is-unmet', evaluated && !met);
+            state.textContent = evaluated ? (met ? 'Met' : 'Not met') : 'Not checked';
         };
-        strengthPassword.addEventListener('input', updateStrength);
-        strengthConfirmation.addEventListener('input', updateStrength);
-        updateStrength();
-    }
+        const normalizeNfkc = value => {
+            try {
+                return value.normalize('NFKC');
+            } catch {
+                return value;
+            }
+        };
+        const normalize = value => normalizeNfkc(value).toLocaleLowerCase();
+        const nameInput = form.querySelector('[name="full_name"], [name="name"]');
+        const emailInput = form.querySelector('[name="email"]');
+        const clampPassword = input => {
+            const maxCharacters = Number(input.dataset.maxCharacters) || 64;
+            const maxUtf16Length = Number(input.maxLength);
+            const characters = Array.from(input.value);
+            if (characters.length <= maxCharacters && (maxUtf16Length < 0 || input.value.length <= maxUtf16Length)) return;
+            let result = '';
+            let count = 0;
+            for (const character of characters) {
+                if (count >= maxCharacters || (maxUtf16Length > 0 && result.length + character.length > maxUtf16Length)) break;
+                result += character;
+                count++;
+            }
+            input.value = result;
+        };
+        const updateChecklist = () => {
+            clampPassword(newPassword);
+            if (confirmation) clampPassword(confirmation);
+            const value = newPassword.value;
+            const normalizedValue = normalizeNfkc(value);
+            const characters = Array.from(normalizedValue);
+            const hasValue = value.length > 0;
+            const lengthValid = characters.length >= 12 && characters.length <= 64 && new TextEncoder().encode(normalizedValue).length <= 72;
+            const categories = [/\p{Ll}/u.test(normalizedValue), /\p{Lu}/u.test(normalizedValue), /\p{N}/u.test(normalizedValue), /[\p{P}\p{S}]/u.test(normalizedValue)];
+            const varietyValid = characters.length >= 16 || categories.filter(Boolean).length >= 3;
+            const nameHint = nameInput?.value || form.dataset.passwordNameHint || '';
+            const emailHint = emailInput?.value || form.dataset.passwordEmailHint || '';
+            const emailLocalPart = emailHint.split('@', 1)[0];
+            const nameParts = nameHint.split(/[^\p{L}\p{M}]+/u).filter(part => Array.from(part).length >= 4);
+            const emailParts = emailLocalPart.split(/[^\p{L}\p{M}\p{N}]+/u).filter(part => Array.from(part).length >= 4);
+            const hints = [nameHint, emailLocalPart, ...nameParts, ...emailParts].map(normalize).filter(Boolean);
+            const personalValid = !hints.some(hint => normalize(value).includes(hint));
+            const matchEvaluated = Boolean(confirmation?.value || value);
+            const matchValid = Boolean(confirmation?.value) && normalizedValue === normalizeNfkc(confirmation.value);
+
+            updateRule('length', hasValue, lengthValid);
+            updateRule('variety', hasValue, varietyValid);
+            updateRule('personal', hasValue, personalValid);
+            updateRule('match', matchEvaluated, matchValid);
+
+            if (!strengthPanel) return;
+            const strong = lengthValid && varietyValid && personalValid && matchValid && characters.length >= 16;
+            const fair = lengthValid && varietyValid && personalValid && matchValid;
+            const level = !hasValue ? 'empty' : strong ? 'strong' : fair ? 'fair' : 'weak';
+            strengthPanel.dataset.state = level;
+            const meter = strengthPanel.querySelector('[data-password-strength-meter]');
+            const status = strengthPanel.querySelector('[data-password-strength-status]');
+            const score = level === 'strong' ? 3 : level === 'fair' ? 2 : level === 'weak' ? 1 : 0;
+            meter?.parentElement?.setAttribute('aria-valuenow', String(score));
+            if (status) status.textContent = level === 'empty' ? 'Strength: not checked' : `Preliminary strength: ${level[0].toUpperCase()}${level.slice(1)}`;
+        };
+
+        newPassword.addEventListener('input', updateChecklist);
+        confirmation?.addEventListener('input', updateChecklist);
+        nameInput?.addEventListener('input', updateChecklist);
+        emailInput?.addEventListener('input', updateChecklist);
+        updateChecklist();
+    });
 })();

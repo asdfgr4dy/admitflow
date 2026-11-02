@@ -10,6 +10,18 @@ final class PasswordResetService
     public const REQUEST_WINDOW_SECONDS = 900;
     public const REQUEST_LIMIT = 3;
 
+    public static function passwordContextForToken(PDO $database, string $token): array
+    {
+        if (!preg_match('/^[a-f0-9]{64}$/', $token)) {
+            return [];
+        }
+
+        $statement = $database->prepare('SELECT u.full_name, u.email FROM password_reset_tokens t JOIN users u ON u.id = t.user_id WHERE t.token_hash = :token_hash AND t.used_at IS NULL AND t.expires_at > :now AND u.account_status = \'active\' LIMIT 1');
+        $statement->execute(['token_hash' => hash('sha256', $token), 'now' => gmdate('Y-m-d H:i:s')]);
+        $context = $statement->fetch();
+        return is_array($context) ? ['name' => (string) $context['full_name'], 'email' => (string) $context['email']] : [];
+    }
+
     public static function request(PDO $database, string $email, ?callable $delivery = null): bool
     {
         $email = mb_strtolower(trim($email));
@@ -76,17 +88,27 @@ final class PasswordResetService
 
     public static function reset(PDO $database, string $token, string $password, string $confirmation): array
     {
-        if (!SecurityPolicy::passwordLengthIsValid($password)) {
-            AuditLog::record($database, null, 'auth.password_reset_failed', 'user', null, 'failure', ['reason' => 'password_policy'], 'warning');
-            return ['ok' => false, 'message' => 'Choose a password between 10 and 200 characters.'];
-        }
-        if (!hash_equals($password, $confirmation)) {
-            AuditLog::record($database, null, 'auth.password_reset_failed', 'user', null, 'failure', ['reason' => 'password_confirmation'], 'warning');
-            return ['ok' => false, 'message' => 'The password confirmation does not match.'];
-        }
         if (!preg_match('/^[a-f0-9]{64}$/', $token)) {
             AuditLog::record($database, null, 'auth.password_reset_failed', 'user', null, 'failure', ['reason' => 'malformed_token'], 'warning');
             return ['ok' => false, 'message' => 'This reset link is invalid or expired. Request a new one.'];
+        }
+
+        try {
+            $normalizedPassword = SecurityPolicy::normalizePassword($password);
+            $normalizedConfirmation = SecurityPolicy::normalizePassword($confirmation);
+        } catch (RuntimeException) {
+            $normalizedPassword = '';
+            $normalizedConfirmation = '';
+            $passwordErrors = ['Password validation is temporarily unavailable. Please try again later.'];
+        }
+        $passwordContext = self::passwordContextForToken($database, $token);
+        $passwordErrors ??= SecurityPolicy::passwordErrors($normalizedPassword, $passwordContext);
+        if (!hash_equals($normalizedPassword, $normalizedConfirmation)) {
+            $passwordErrors[] = 'The password confirmation does not match.';
+        }
+        if ($passwordErrors !== []) {
+            AuditLog::record($database, null, 'auth.password_reset_failed', 'user', null, 'failure', ['reason' => 'password_policy'], 'warning');
+            return ['ok' => false, 'message' => implode(' ', $passwordErrors), 'errors' => $passwordErrors];
         }
 
         $database->beginTransaction();
@@ -94,7 +116,7 @@ final class PasswordResetService
             $driver = $database->getAttribute(PDO::ATTR_DRIVER_NAME);
             $lockSuffix = $driver === 'mysql' ? ' FOR UPDATE' : '';
             $now = gmdate('Y-m-d H:i:s');
-            $lookup = $database->prepare('SELECT id, user_id FROM password_reset_tokens WHERE token_hash = :token_hash AND used_at IS NULL AND expires_at > :now LIMIT 1' . $lockSuffix);
+            $lookup = $database->prepare('SELECT t.id, t.user_id, u.full_name, u.email FROM password_reset_tokens t JOIN users u ON u.id = t.user_id WHERE t.token_hash = :token_hash AND t.used_at IS NULL AND t.expires_at > :now AND u.account_status = \'active\' LIMIT 1' . $lockSuffix);
             $lookup->execute(['token_hash' => hash('sha256', $token), 'now' => $now]);
             $reset = $lookup->fetch();
             if (!is_array($reset)) {
@@ -103,8 +125,15 @@ final class PasswordResetService
                 return ['ok' => false, 'message' => 'This reset link is invalid or expired. Request a new one.'];
             }
 
-            $updateUser = $database->prepare('UPDATE users SET password_hash = :password_hash WHERE id = :user_id AND account_status = \'active\'');
-            $updateUser->execute(['password_hash' => password_hash($password, PASSWORD_DEFAULT), 'user_id' => $reset['user_id']]);
+            $passwordErrors = SecurityPolicy::passwordErrors($normalizedPassword, ['name' => $reset['full_name'], 'email' => $reset['email']]);
+            if ($passwordErrors !== []) {
+                $database->rollBack();
+                AuditLog::record($database, null, 'auth.password_reset_failed', 'user', null, 'failure', ['reason' => 'password_policy'], 'warning');
+                return ['ok' => false, 'message' => implode(' ', $passwordErrors), 'errors' => $passwordErrors];
+            }
+
+            $updateUser = $database->prepare('UPDATE users SET password_hash = :password_hash, must_change_password = 0 WHERE id = :user_id AND account_status = \'active\'');
+            $updateUser->execute(['password_hash' => password_hash($normalizedPassword, PASSWORD_DEFAULT), 'user_id' => $reset['user_id']]);
             if ($updateUser->rowCount() !== 1) {
                 $database->rollBack();
                 AuditLog::record($database, null, 'auth.password_reset_failed', 'user', null, 'failure', ['reason' => 'account_unavailable'], 'warning');

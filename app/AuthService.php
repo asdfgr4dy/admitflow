@@ -67,8 +67,8 @@ final class AuthService
     {
         $name = trim((string) ($input['full_name'] ?? ''));
         $email = mb_strtolower(trim((string) ($input['email'] ?? '')));
-        $password = (string) ($input['password'] ?? '');
-        $confirmation = (string) ($input['password_confirmation'] ?? '');
+        $passwordInput = (string) ($input['password'] ?? '');
+        $confirmationInput = (string) ($input['password_confirmation'] ?? '');
 
         if ($name === '' || mb_strlen($name) > 160) {
             AuditLog::record($database, null, 'account.registration_failed', 'user', null, 'failure', ['reason' => 'invalid_name'], 'warning');
@@ -78,13 +78,21 @@ final class AuthService
             AuditLog::record($database, null, 'account.registration_failed', 'user', null, 'failure', ['reason' => 'invalid_email'], 'warning');
             return ['ok' => false, 'message' => 'Enter a valid email address.'];
         }
-        if (!SecurityPolicy::passwordLengthIsValid($password)) {
-            AuditLog::record($database, null, 'account.registration_failed', 'user', null, 'failure', ['reason' => 'password_policy'], 'warning');
-            return ['ok' => false, 'message' => 'Choose a password between 10 and 200 characters.'];
+        try {
+            $password = SecurityPolicy::normalizePassword($passwordInput);
+            $confirmation = SecurityPolicy::normalizePassword($confirmationInput);
+            $passwordErrors = SecurityPolicy::passwordErrors($password, ['name' => $name, 'email' => $email]);
+        } catch (RuntimeException) {
+            $password = '';
+            $confirmation = '';
+            $passwordErrors = ['Password validation is temporarily unavailable. Please try again later.'];
         }
         if (!hash_equals($password, $confirmation)) {
-            AuditLog::record($database, null, 'account.registration_failed', 'user', null, 'failure', ['reason' => 'password_confirmation'], 'warning');
-            return ['ok' => false, 'message' => 'The password confirmation does not match.'];
+            $passwordErrors[] = 'The password confirmation does not match.';
+        }
+        if ($passwordErrors !== []) {
+            AuditLog::record($database, null, 'account.registration_failed', 'user', null, 'failure', ['reason' => 'password_policy'], 'warning');
+            return ['ok' => false, 'message' => implode(' ', $passwordErrors), 'errors' => $passwordErrors];
         }
         if (($input['privacy_consent'] ?? '') !== '1') {
             AuditLog::record($database, null, 'account.registration_failed', 'user', null, 'failure', ['reason' => 'privacy_consent_required'], 'warning');
@@ -94,7 +102,7 @@ final class AuthService
         try {
             $database->beginTransaction();
             $statement = $database->prepare(
-                'INSERT INTO users (full_name, email, password_hash, role) VALUES (:name, :email, :password_hash, \'student\')'
+                'INSERT INTO users (full_name, email, password_hash, role, must_change_password) VALUES (:name, :email, :password_hash, \'student\', 0)'
             );
             $statement->execute([
                 'name' => $name,
@@ -154,10 +162,10 @@ final class AuthService
 
         $user = null;
         if ($email !== '' && $password !== '') {
-            $statement = $database->prepare('SELECT id, full_name, email, password_hash, role FROM users WHERE email = :email AND account_status = \'active\' LIMIT 1');
+            $statement = $database->prepare('SELECT id, full_name, email, password_hash, role, must_change_password FROM users WHERE email = :email AND account_status = \'active\' LIMIT 1');
             $statement->execute(['email' => $email]);
             $candidate = $statement->fetch();
-            if (is_array($candidate) && password_verify($password, $candidate['password_hash'])) {
+            if (is_array($candidate) && SecurityPolicy::verifyPassword($password, $candidate['password_hash'])) {
                 $user = $candidate;
             }
         }
@@ -211,6 +219,7 @@ final class AuthService
             'full_name' => $user['full_name'],
             'email' => $user['email'],
             'role' => $user['role'],
+            'must_change_password' => (int) ($user['must_change_password'] ?? 0),
         ];
         $_SESSION['last_activity'] = time();
 
@@ -219,29 +228,43 @@ final class AuthService
 
     public static function changePassword(PDO $database, array $user, string $currentPassword, string $newPassword, string $confirmation): array
     {
-        if (!SecurityPolicy::passwordLengthIsValid($newPassword)) {
-            AuditLog::record($database, $user, 'auth.password_change_failed', 'user', (int) ($user['id'] ?? 0) ?: null, 'failure', ['reason' => 'password_policy'], 'warning');
-            return ['ok' => false, 'message' => 'Choose a password between 10 and 200 characters.'];
-        }
-        if (!hash_equals($newPassword, $confirmation)) {
-            AuditLog::record($database, $user, 'auth.password_change_failed', 'user', (int) ($user['id'] ?? 0) ?: null, 'failure', ['reason' => 'password_confirmation'], 'warning');
-            return ['ok' => false, 'message' => 'The password confirmation does not match.'];
-        }
-
         $database->beginTransaction();
         try {
             $lockSuffix = $database->getAttribute(PDO::ATTR_DRIVER_NAME) === 'mysql' ? ' FOR UPDATE' : '';
-            $query = $database->prepare('SELECT password_hash FROM users WHERE id = :id AND account_status = \'active\'' . $lockSuffix);
+            $query = $database->prepare('SELECT password_hash, full_name, email FROM users WHERE id = :id AND account_status = \'active\'' . $lockSuffix);
             $query->execute(['id' => $user['id']]);
-            $passwordHash = $query->fetchColumn();
-            if (!is_string($passwordHash) || !password_verify($currentPassword, $passwordHash)) {
+            $account = $query->fetch();
+            if (!is_array($account) || !SecurityPolicy::verifyPassword($currentPassword, (string) $account['password_hash'])) {
                 $database->rollBack();
                 AuditLog::record($database, $user, 'auth.password_change_failed', 'user', (int) $user['id'], 'failure', ['reason' => 'current_password_invalid'], 'warning');
                 return ['ok' => false, 'message' => 'The current password is incorrect.'];
             }
 
-            $update = $database->prepare('UPDATE users SET password_hash = :password_hash WHERE id = :id AND account_status = \'active\'');
-            $update->execute(['password_hash' => password_hash($newPassword, PASSWORD_DEFAULT), 'id' => $user['id']]);
+            try {
+                $normalizedPassword = SecurityPolicy::normalizePassword($newPassword);
+                $normalizedConfirmation = SecurityPolicy::normalizePassword($confirmation);
+                $normalizedCurrent = SecurityPolicy::normalizePassword($currentPassword);
+                $passwordErrors = SecurityPolicy::passwordErrors($normalizedPassword, ['name' => $account['full_name'], 'email' => $account['email']]);
+            } catch (RuntimeException) {
+                $normalizedPassword = '';
+                $passwordErrors = ['Password validation is temporarily unavailable. Please try again later.'];
+                $normalizedConfirmation = '';
+                $normalizedCurrent = "\0";
+            }
+            if (!hash_equals($normalizedPassword, $normalizedConfirmation)) {
+                $passwordErrors[] = 'The password confirmation does not match.';
+            }
+            if (hash_equals($normalizedPassword, $normalizedCurrent)) {
+                $passwordErrors[] = 'Choose a password that is different from your current password.';
+            }
+            if ($passwordErrors !== []) {
+                $database->rollBack();
+                AuditLog::record($database, $user, 'auth.password_change_failed', 'user', (int) $user['id'], 'failure', ['reason' => 'password_policy'], 'warning');
+                return ['ok' => false, 'message' => implode(' ', $passwordErrors), 'errors' => $passwordErrors];
+            }
+
+            $update = $database->prepare('UPDATE users SET password_hash = :password_hash, must_change_password = 0 WHERE id = :id AND account_status = \'active\'');
+            $update->execute(['password_hash' => password_hash($normalizedPassword, PASSWORD_DEFAULT), 'id' => $user['id']]);
             $invalidate = $database->prepare('UPDATE password_reset_tokens SET used_at = :used_at WHERE user_id = :user_id AND used_at IS NULL');
             $invalidate->execute(['used_at' => gmdate('Y-m-d H:i:s'), 'user_id' => $user['id']]);
             AuditLog::record($database, $user, 'auth.password_changed', 'user', (int) $user['id'], 'success', [], 'notice');
@@ -249,6 +272,9 @@ final class AuthService
 
             session_regenerate_id(true);
             unset($_SESSION['csrf_token'], $_SESSION['captcha_answer']);
+            if (isset($_SESSION['user']) && is_array($_SESSION['user'])) {
+                $_SESSION['user']['must_change_password'] = 0;
+            }
 
             return ['ok' => true, 'message' => 'Your password has been changed.'];
         } catch (Throwable $error) {

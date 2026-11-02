@@ -8,6 +8,7 @@ if (PHP_SAPI !== 'cli') {
 
 require dirname(__DIR__) . '/app/Database.php';
 require_once dirname(__DIR__) . '/app/AuditLog.php';
+require_once dirname(__DIR__) . '/app/SecurityPolicy.php';
 
 $name = trim($argv[1] ?? '');
 $email = mb_strtolower(trim($argv[2] ?? ''));
@@ -19,14 +20,14 @@ if ($name === '' || mb_strlen($name) > 160 || !filter_var($email, FILTER_VALIDAT
 
 try {
     $database = Database::connection();
-    $temporaryPassword = rtrim(strtr(base64_encode(random_bytes(24)), '+/', 'AZ'), '=');
+    $temporaryPassword = SecurityPolicy::generatePassword(['name' => $name, 'email' => $email]);
     $database->beginTransaction();
 
-    $insert = $database->prepare('INSERT INTO users (full_name, email, password_hash, role, account_status) VALUES (:name, :email, :password_hash, \'student\', \'active\')');
+    $insert = $database->prepare('INSERT INTO users (full_name, email, password_hash, role, account_status, must_change_password) VALUES (:name, :email, :password_hash, \'student\', \'active\', 1)');
     $insert->execute([
         'name' => $name,
         'email' => $email,
-        'password_hash' => password_hash($temporaryPassword, PASSWORD_DEFAULT),
+        'password_hash' => password_hash(SecurityPolicy::normalizePassword($temporaryPassword), PASSWORD_DEFAULT),
     ]);
     $userId = (int) $database->lastInsertId();
 

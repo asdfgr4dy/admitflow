@@ -1589,14 +1589,21 @@ img.document-preview-media { width: auto; max-width: 100%; height: auto; max-hei
 .password-strength { display: grid; gap: 6px; margin: -2px 0 4px; }
 .password-strength-meter { height: 5px; overflow: hidden; border-radius: 99px; background: #E2EAE6; }
 .password-strength-meter span { display: block; width: 0; height: 100%; background: #D87966; transition: width .16s ease, background-color .16s ease; }
-.password-strength[data-state="ready"] .password-strength-meter span { background: #39775F; }
-.password-strength[data-state="incomplete"] .password-strength-meter span { background: #E8A83E; }
+.password-strength[data-state="weak"] .password-strength-meter span { width: 34%; background: #B84B3C; }
+.password-strength[data-state="fair"] .password-strength-meter span { width: 67%; background: #B77919; }
+.password-strength[data-state="strong"] .password-strength-meter span { width: 100%; background: #39775F; }
 .password-strength > p { margin: 0; color: #61757D; font-size: .72rem; }
-.password-strength ul { display: flex; flex-wrap: wrap; gap: 5px 16px; margin: 0; padding: 0; list-style: none; }
-.password-strength li { color: #75858B; font-size: .7rem; }
-.password-strength li::before { margin-right: 5px; color: #A43E34; content: '○'; }
-.password-strength li.is-met { color: #315C47; }
-.password-strength li.is-met::before { color: #39775F; content: '✓'; }
+.password-checklist { display: grid; gap: 7px; margin: 7px 0 3px; padding: 0; list-style: none; }
+.password-checklist li { display: grid; grid-template-columns: minmax(78px, auto) 1fr; gap: 9px; align-items: baseline; color: #53676B; font-size: .76rem; }
+.password-checklist [data-rule-state] { color: #66787A; font-weight: 700; }
+.password-checklist li.is-met { color: #315C47; }
+.password-checklist li.is-met [data-rule-state] { color: #39775F; }
+.password-checklist li.is-unmet { color: #7A3F37; }
+.password-checklist li.is-unmet [data-rule-state] { color: #A43E34; }
+.password-checklist [data-rule-state]::before { margin-right: 5px; content: '○'; }
+.password-checklist li.is-met [data-rule-state]::before { content: '✓'; }
+.password-checklist li.is-unmet [data-rule-state]::before { content: '×'; }
+.password-strength-meter[role="progressbar"] { border-radius: 3px; }
 
 
 

@@ -37,7 +37,10 @@ $method = $_SERVER['REQUEST_METHOD'] ?? 'GET';
 
 try {
     $database = Database::connection();
-    refresh_authenticated_user($database);
+    $authenticatedUser = refresh_authenticated_user($database);
+    if ($authenticatedUser !== null && (int) ($authenticatedUser['must_change_password'] ?? 0) === 1 && !passwordChangeRequiredRouteAllowed($path, $method)) {
+        redirect('/account/password');
+    }
 
     if ($method === 'POST') {
         verify_csrf();
@@ -55,7 +58,8 @@ try {
         if ($path === '/login') {
             $result = AuthService::login($database, $_POST);
             if ($result['ok']) {
-                redirect(portal_path_for_user(current_user()));
+                $authenticatedUser = current_user();
+                redirect((int) ($authenticatedUser['must_change_password'] ?? 0) === 1 ? '/account/password' : portal_path_for_user($authenticatedUser));
             }
             render_page('auth/login', [
                 'title' => 'Sign in',
@@ -124,7 +128,8 @@ try {
                 flash('success', $result['message']);
                 redirect('/login');
             }
-            render_page('auth/reset-password', ['title' => 'Reset password', 'result' => $result, 'token' => (string) ($_POST['token'] ?? '')]);
+            $resetToken = (string) ($_POST['token'] ?? '');
+            render_page('auth/reset-password', ['title' => 'Reset password', 'result' => $result, 'token' => $resetToken, 'passwordContext' => PasswordResetService::passwordContextForToken($database, $resetToken)]);
             exit;
         }
 
@@ -969,7 +974,8 @@ try {
     }
 
     if ($path === '/reset-password') {
-        render_page('auth/reset-password', ['title' => 'Reset password', 'token' => (string) ($_GET['token'] ?? '')]);
+        $resetToken = (string) ($_GET['token'] ?? '');
+        render_page('auth/reset-password', ['title' => 'Reset password', 'token' => $resetToken, 'passwordContext' => PasswordResetService::passwordContextForToken($database, $resetToken)]);
         exit;
     }
 
