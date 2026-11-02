@@ -607,6 +607,7 @@ h1 em, h2 em { color: #8B5C15; font-style: italic; }
 .academic-table td .academic-status-inactive { border: 1px solid #D9DDDA; background: #EFF1EF; color: #596873; }
 .academic-truncated { display: block; max-width: 240px; overflow: hidden; color: #596873; text-overflow: ellipsis; white-space: nowrap; }
 .academic-current-label { color: #39775F !important; font-weight: 700; }
+.staff-table-wrap .dropdown-menu { z-index: 1035; }
 .academic-row-actions .dropdown-menu { min-width: 175px; padding: 5px; border-color: #D9E4DF; border-radius: 5px; box-shadow: 0 8px 20px rgba(22,51,74,.12); }
 .academic-row-actions .dropdown-item { padding: 7px 9px; border-radius: 3px; font-size: .8rem; }
 .academic-row-actions .btn { display: grid; width: 32px; height: 32px; place-items: center; padding: 0; }

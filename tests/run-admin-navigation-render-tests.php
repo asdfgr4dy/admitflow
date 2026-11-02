@@ -97,6 +97,20 @@ $assert(str_contains($academicMarkup['years'], '<h1>Academic Years</h1>') && str
 $assert(str_contains($academicMarkup['requirements'], '<h1>Requirements</h1>') && str_contains($academicMarkup['requirements'], 'Official record') && !str_contains($academicMarkup['requirements'], 'Engineering program details') && !str_contains($academicMarkup['requirements'], 'AY 2026-2027</strong>'), 'Requirements page shows requirement records only');
 $assert(substr_count($academicMarkup['programs'], 'data-form-drawer') === 1 && substr_count($academicMarkup['years'], 'data-form-drawer') === 1 && substr_count($academicMarkup['requirements'], 'data-form-drawer') === 1 && str_contains($academicMarkup['programs'], 'admitflow-form-drawer academic-drawer'), 'each academic page invokes one extracted shared right-side Add/Edit drawer');
 $assert(str_contains($academicMarkup['programs'], 'aria-sort=') && str_contains($academicMarkup['years'], 'aria-sort=') && str_contains($academicMarkup['requirements'], 'aria-sort=') && str_contains($academicMarkup['programs'], 'data-page-size-select="per_page"'), 'all academic tables expose sortable headers and shared pagination controls');
+$assert(str_contains($academicMarkup['programs'], 'dropdown academic-row-actions') && str_contains($academicMarkup['years'], 'dropdown academic-row-actions') && str_contains($academicMarkup['requirements'], 'dropdown academic-row-actions') && str_contains((string) file_get_contents(dirname(__DIR__) . '/public/assets/js/app.js'), '.academic-row-actions [data-bs-toggle="dropdown"]'), 'Programs, Academic Years, and Requirements row menus use the fixed-strategy dropdown selector hook');
+$applicationQueueSource = (string) file_get_contents(dirname(__DIR__) . '/resources/views/staff/application-queue.php');
+$dropdownPageSources = [
+    'Academic Management' => (string) file_get_contents(dirname(__DIR__) . '/resources/views/staff/academic-management.php'),
+    'Users' => (string) file_get_contents(dirname(__DIR__) . '/resources/views/staff/users.php'),
+    'Announcements' => (string) file_get_contents(dirname(__DIR__) . '/resources/views/staff/announcements.php'),
+    'Audit Log' => (string) file_get_contents(dirname(__DIR__) . '/resources/views/staff/audit.php'),
+    'Application Queue' => $applicationQueueSource,
+];
+$rowDropdownsHaveHook = true;
+foreach ($dropdownPageSources as $viewName => $viewSource) {
+    if (str_contains($viewSource, 'class="dropdown')) $rowDropdownsHaveHook = $rowDropdownsHaveHook && str_contains($viewSource, 'academic-row-actions') && str_contains($viewSource, 'data-bs-toggle="dropdown"');
+}
+$assert($rowDropdownsHaveHook && str_contains((string) file_get_contents(dirname(__DIR__) . '/public/assets/css/app.css'), '.staff-table-wrap .dropdown-menu { z-index: 1035; }'), 'table dropdown inventory covers Academic Management, Users, Announcements, Audit Log, and Application Queue; any row dropdown gets the fixed hook and menu layer');
 $assert(!str_contains($academicMarkup['programs'], 'academic-row-editor') && !str_contains($academicMarkup['years'], 'academic-row-editor') && !str_contains($academicMarkup['requirements'], 'academic-row-editor') && !str_contains($academicMarkup['programs'], 'View / Edit'), 'academic rows do not expand inline');
 $assert(str_contains($academicMarkup['programs'], 'Description') && str_contains($academicMarkup['programs'], 'Applications') && str_contains($academicMarkup['programs'], 'data-character-count="description"') && str_contains($academicMarkup['years'], 'Current Year') && str_contains($academicMarkup['years'], 'data-status-field="is_open"') && str_contains($academicMarkup['requirements'], 'Accepted file types') && str_contains($academicMarkup['requirements'], 'data-status-field="is_active"'), 'page-specific fields, current-year action, and status safety controls render');
 $filters = array_merge($filters, ['program_q' => 'Engineering', 'program_state' => 'inactive']);
@@ -142,8 +156,12 @@ $assert(str_contains($detailViewSource, "action=\"<?= \$isArchivedApplication ? 
 $assert(str_contains($routeSource, "\$includeArchived = \$user['role'] === 'admin' && (string) (\$_GET['archived'] ?? '') === '1'") && str_contains($routeSource, '$includeArchived);') && str_contains($routeSource, "AuditLog::recordOncePerWindow(\$database, \$user, 'application.viewed'"), 'detail route grants archived lookup only from explicit admin mode and records eligible views');
 $assert(str_contains($routeSource, "if (\$method === 'POST')") && str_contains($routeSource, 'verify_csrf();') && str_contains($routeSource, "\$path === '/staff/user/delete'") && str_contains($routeSource, "\$path === '/staff/application/archive' || \$path === '/staff/application/restore'") && str_contains($routeSource, "\$user['role'] !== 'admin'") && str_contains($routeSource, 'StaffAccountService::delete') && str_contains($routeSource, 'StaffService::archiveApplication') && str_contains($routeSource, 'StaffService::restoreApplication'), 'delete/archive/restore POST handlers retain shared CSRF validation and explicit admin guards before service calls');
 $changedViews = [
+    $dropdownPageSources['Academic Management'],
+    $dropdownPageSources['Users'],
+    $dropdownPageSources['Announcements'],
+    $dropdownPageSources['Audit Log'],
+    $dropdownPageSources['Application Queue'],
     (string) file_get_contents(dirname(__DIR__) . '/resources/views/staff/users.php'),
-    $applicationQueueSource,
     $detailViewSource,
 ];
 $inlineMarkupFound = false;

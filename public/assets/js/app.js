@@ -1,4 +1,59 @@
 (() => {
+    const tableDropdownSelector = '.academic-row-actions [data-bs-toggle="dropdown"], .table-responsive [data-bs-toggle="dropdown"], .staff-table-wrap [data-bs-toggle="dropdown"]';
+    const openTableDropdownSelector = '.academic-row-actions [data-bs-toggle="dropdown"].show, .table-responsive [data-bs-toggle="dropdown"].show, .staff-table-wrap [data-bs-toggle="dropdown"].show';
+    const initializeTableDropdowns = root => {
+        if (!window.bootstrap?.Dropdown) return;
+        const toggles = [];
+        if (root instanceof Element && root.matches(tableDropdownSelector)) toggles.push(root);
+        if (root.querySelectorAll) toggles.push(...root.querySelectorAll(tableDropdownSelector));
+        toggles.forEach(toggle => {
+            window.bootstrap.Dropdown.getOrCreateInstance(toggle, {
+                autoClose: true,
+                popperConfig: defaults => ({
+                    ...defaults,
+                    strategy: 'fixed',
+                    modifiers: (defaults.modifiers || []).map(modifier => modifier.name === 'flip'
+                        ? { ...modifier, options: { ...modifier.options, fallbackPlacements: ['top-end', 'bottom-end', 'top-start', 'bottom-start'] } }
+                        : modifier),
+                }),
+            });
+        });
+    };
+    const closeTableDropdowns = except => {
+        document.querySelectorAll(openTableDropdownSelector).forEach(toggle => {
+            if (toggle === except) return;
+            window.bootstrap?.Dropdown?.getInstance(toggle)?.hide();
+        });
+    };
+    const initializeExistingTableDropdowns = () => initializeTableDropdowns(document);
+    if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', initializeExistingTableDropdowns, { once: true });
+    else initializeExistingTableDropdowns();
+    const tableDropdownObserver = new MutationObserver(records => {
+        records.forEach(record => record.addedNodes.forEach(node => {
+            if (node instanceof Element) initializeTableDropdowns(node);
+        }));
+    });
+    tableDropdownObserver.observe(document.documentElement, { childList: true, subtree: true });
+    document.addEventListener('click', event => {
+        const toggle = event.target instanceof Element ? event.target.closest(tableDropdownSelector) : null;
+        if (toggle) {
+            closeTableDropdowns(toggle);
+            return;
+        }
+        if (!(event.target instanceof Element) || !event.target.closest('.dropdown-menu')) closeTableDropdowns();
+        else if (event.target.closest('.dropdown-menu .dropdown-item')) closeTableDropdowns();
+    });
+    document.addEventListener('keydown', event => {
+        if (event.key !== 'Escape') return;
+        const openToggle = document.querySelector(openTableDropdownSelector);
+        if (!openToggle) return;
+        event.preventDefault();
+        event.stopPropagation();
+        window.bootstrap?.Dropdown?.getInstance(openToggle)?.hide();
+        openToggle.focus({ preventScroll: true });
+    }, true);
+    document.addEventListener('scroll', () => closeTableDropdowns(), { capture: true, passive: true });
+
     document.querySelectorAll('[data-toast]').forEach(toastElement => {
         if (window.bootstrap?.Toast) {
             window.bootstrap.Toast.getOrCreateInstance(toastElement).show();
