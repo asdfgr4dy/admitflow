@@ -1,7 +1,10 @@
 /config/database.local.php
+/config/mail.local.php
 /vendor/
 /storage/logs/*
 !/storage/logs/.gitkeep
+/storage/mailbox/*
+!/storage/mailbox/.gitkeep
 /storage/uploads/*
 !/storage/uploads/.gitkeep
 /storage/backups/*

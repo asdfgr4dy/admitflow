@@ -3,10 +3,11 @@ declare(strict_types=1);
 
 require_once __DIR__ . '/AuditLog.php';
 require_once __DIR__ . '/SecurityPolicy.php';
+require_once __DIR__ . '/MailService.php';
 
 final class StaffAccountService
 {
-    public static function create(PDO $database, array $actor, string $name, string $email, string $role): array
+    public static function create(PDO $database, array $actor, string $name, string $email, string $role, ?callable $delivery = null): array
     {
         $name = trim($name);
         $email = mb_strtolower(trim($email));
@@ -17,11 +18,9 @@ final class StaffAccountService
             throw new DomainException('Enter a valid staff name, email, and role.');
         }
 
-        $setupToken = bin2hex(random_bytes(32));
-        $expiresAt = (new DateTimeImmutable('now', new DateTimeZone('UTC')))->add(new DateInterval('PT30M'));
         $database->beginTransaction();
         try {
-            $initialPassword = SecurityPolicy::generatePassword(['name' => $name, 'email' => $email]);
+            $initialPassword = bin2hex(random_bytes(32));
             $insert = $database->prepare('INSERT INTO users (full_name, email, password_hash, role, account_status, must_change_password) VALUES (:name, :email, :password_hash, :role, \'active\', 1)');
             $insert->execute([
                 'name' => $name,
@@ -31,16 +30,11 @@ final class StaffAccountService
             ]);
             $userId = (int) $database->lastInsertId();
 
-            $token = $database->prepare('INSERT INTO password_reset_tokens (user_id, token_hash, expires_at) VALUES (:user_id, :token_hash, :expires_at)');
-            $token->execute([
-                'user_id' => $userId,
-                'token_hash' => hash('sha256', $setupToken),
-                'expires_at' => $expiresAt->format('Y-m-d H:i:s'),
-            ]);
             AuditLog::record($database, $actor, 'user.staff_account_created', 'user', $userId, 'success', ['role' => $role], 'notice');
             $database->commit();
 
-            return ['user_id' => $userId, 'setup_path' => '/reset-password?token=' . rawurlencode($setupToken)];
+            $invitation = self::sendInvitation($database, $actor, $userId, false, $delivery);
+            return ['user_id' => $userId, 'invitation' => $invitation];
         } catch (Throwable $error) {
             if ($database->inTransaction()) {
                 $database->rollBack();
@@ -54,6 +48,69 @@ final class StaffAccountService
             }
             throw $error;
         }
+    }
+
+    public static function sendInvitation(PDO $database, array $actor, int $targetUserId, bool $resend = true, ?callable $delivery = null): array
+    {
+        if (($actor['role'] ?? '') !== 'admin' || (int) ($actor['id'] ?? 0) < 1) {
+            throw new DomainException('Administrator access is required to send staff invitations.');
+        }
+        if ($targetUserId < 1) throw new DomainException('Choose a valid staff account.');
+
+        $database->beginTransaction();
+        try {
+            $lockSuffix = $database->getAttribute(PDO::ATTR_DRIVER_NAME) === 'mysql' ? ' FOR UPDATE' : '';
+            $lookup = $database->prepare('SELECT id, full_name, email, role, account_status, must_change_password FROM users WHERE id = :id' . $lockSuffix);
+            $lookup->execute(['id' => $targetUserId]);
+            $account = $lookup->fetch();
+            if (!is_array($account) || !in_array($account['role'], ['reviewer', 'admin'], true) || $account['account_status'] !== 'active' || (int) $account['must_change_password'] !== 1) {
+                $database->rollBack();
+                throw new DomainException('This active staff account is not awaiting password setup.');
+            }
+
+            $now = new DateTimeImmutable('now', new DateTimeZone('UTC'));
+            $windowStart = $now->sub(new DateInterval('PT' . PasswordResetService::REQUEST_WINDOW_SECONDS . 'S'))->format('Y-m-d H:i:s');
+            $count = $database->prepare('SELECT COUNT(*) FROM password_reset_tokens WHERE user_id = :user_id AND created_at >= :window_start');
+            $count->execute(['user_id' => $targetUserId, 'window_start' => $windowStart]);
+            if ((int) $count->fetchColumn() >= PasswordResetService::REQUEST_LIMIT) {
+                $database->rollBack();
+                AuditLog::record($database, $actor, 'user.staff_invitation_delivery_failed', 'user', $targetUserId, 'failure', ['reason' => 'rate_limited'], 'warning');
+                return ['ok' => false, 'reason' => 'rate_limited', 'message' => 'Please wait before requesting another invitation email.'];
+            }
+
+            $database->prepare('UPDATE password_reset_tokens SET used_at = :used_at WHERE user_id = :user_id AND used_at IS NULL')->execute([
+                'used_at' => $now->format('Y-m-d H:i:s'),
+                'user_id' => $targetUserId,
+            ]);
+            $token = bin2hex(random_bytes(32));
+            $expiresAt = $now->add(new DateInterval('PT30M'));
+            $insert = $database->prepare('INSERT INTO password_reset_tokens (user_id, token_hash, expires_at) VALUES (:user_id, :token_hash, :expires_at)');
+            $insert->execute(['user_id' => $targetUserId, 'token_hash' => hash('sha256', $token), 'expires_at' => $expiresAt->format('Y-m-d H:i:s')]);
+            AuditLog::record($database, $actor, $resend ? 'user.staff_invitation_resent' : 'user.staff_invitation_created', 'user', $targetUserId, 'success', [], 'notice');
+            $database->commit();
+        } catch (Throwable $error) {
+            if ($database->inTransaction()) $database->rollBack();
+            throw $error;
+        }
+
+        try {
+            $result = $delivery === null
+                ? MailService::sendStaffInvitation((string) $account['email'], (string) $account['full_name'], $token, $resend)
+                : (array) $delivery((string) $account['email'], (string) $account['full_name'], $token, $resend);
+        } catch (Throwable $error) {
+            error_log('[admitflow] Staff invitation transport failed (' . $error::class . ').');
+            $result = ['ok' => false, 'message' => 'The SMTP provider did not accept the invitation email.'];
+        }
+
+        if (empty($result['ok'])) {
+            $invalidate = $database->prepare('UPDATE password_reset_tokens SET used_at = :used_at WHERE user_id = :user_id AND token_hash = :token_hash AND used_at IS NULL');
+            $invalidate->execute(['used_at' => gmdate('Y-m-d H:i:s'), 'user_id' => $targetUserId, 'token_hash' => hash('sha256', $token)]);
+            AuditLog::record($database, $actor, 'user.staff_invitation_delivery_failed', 'user', $targetUserId, 'failure', ['reason' => 'transport_or_configuration'], 'warning');
+            return ['ok' => false, 'reason' => 'delivery_failed', 'message' => (string) ($result['message'] ?? 'The invitation email could not be delivered.')];
+        }
+
+        AuditLog::record($database, $actor, 'user.staff_invitation_delivery_succeeded', 'user', $targetUserId, 'success', [], 'notice');
+        return ['ok' => true, 'reason' => 'sent', 'message' => 'The SMTP provider accepted the invitation email.'];
     }
 
     public static function delete(PDO $database, array $actor, int $targetUserId): void

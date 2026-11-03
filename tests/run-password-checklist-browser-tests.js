@@ -34,10 +34,10 @@ const { chromium } = require('playwright');
         check(await state('length') === 'Met' && await state('variety') === 'Met' && await state('personal') === 'Met' && await state('match') === 'Met', 'all four rules update to met for a valid matching password');
         check((await page.locator('[data-password-strength-panel]').getAttribute('data-state')) === 'fair', 'a valid 12-character mixed password is rated fair');
 
-        await page.locator('[name="full_name"]').fill('Qz7');
+        await page.locator('[name="full_name"]').fill('mV2#r');
         check(await state('personal') === 'Not met' && (await page.locator('[data-password-strength-panel]').getAttribute('data-state')) === 'weak', 'personal-information hints update as the name field changes');
         await page.locator('[name="full_name"]').fill('');
-        await page.locator('[name="email"]').fill('Qz7@example.test');
+        await page.locator('[name="email"]').fill('mV2#r@example.test');
         check(await state('personal') === 'Not met', 'email-local-part hints update as the email field changes');
         await page.locator('[name="email"]').fill('');
 

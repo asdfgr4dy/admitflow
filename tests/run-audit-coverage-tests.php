@@ -6,8 +6,6 @@ require dirname(__DIR__) . '/app/AuditLog.php';
 require dirname(__DIR__) . '/app/Pagination.php';
 require dirname(__DIR__) . '/app/StaffService.php';
 require dirname(__DIR__) . '/app/ApplicationService.php';
-require dirname(__DIR__) . '/app/BackupIntegrity.php';
-require dirname(__DIR__) . '/app/BackupService.php';
 
 $assertions = 0;
 $assert = static function (bool $condition, string $message) use (&$assertions): void {
@@ -30,7 +28,6 @@ $database->exec('CREATE TABLE interviews (id INTEGER PRIMARY KEY AUTOINCREMENT, 
 $database->exec('CREATE TABLE screening_notes (id INTEGER PRIMARY KEY AUTOINCREMENT, application_id INTEGER, author_id INTEGER, note TEXT, visibility TEXT DEFAULT "staff_only", created_at TEXT DEFAULT CURRENT_TIMESTAMP)');
 $database->exec('CREATE TABLE enrollment_records (id INTEGER PRIMARY KEY AUTOINCREMENT, application_id INTEGER UNIQUE, status TEXT, checklist TEXT, prepared_by INTEGER, completed_at TEXT, created_at TEXT DEFAULT CURRENT_TIMESTAMP, updated_at TEXT DEFAULT CURRENT_TIMESTAMP)');
 $database->exec('CREATE TABLE notifications (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER, type TEXT, title TEXT, message TEXT, related_type TEXT, related_id INTEGER, created_at TEXT DEFAULT CURRENT_TIMESTAMP)');
-$database->exec('CREATE TABLE backups (id INTEGER PRIMARY KEY AUTOINCREMENT, backup_type TEXT, storage_name TEXT UNIQUE, file_size_bytes INTEGER, sha256 TEXT, verification_status TEXT, created_by INTEGER, created_at TEXT DEFAULT CURRENT_TIMESTAMP, verified_at TEXT, failure_message TEXT)');
 $database->exec('CREATE TABLE audit_logs (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER NULL, actor_label TEXT NOT NULL, action TEXT NOT NULL, entity_type TEXT NULL, entity_id INTEGER NULL, outcome TEXT NOT NULL, severity TEXT NOT NULL, ip_address TEXT NULL, request_id TEXT NULL, details TEXT NULL, created_at TEXT NOT NULL)');
 $database->exec("INSERT INTO users (id, full_name, email, role, account_status) VALUES (1, 'Coverage Admin', 'admin@coverage.test', 'admin', 'active'), (2, 'Coverage Student', 'student@coverage.test', 'student', 'active'), (3, 'Coverage Reviewer', 'reviewer@coverage.test', 'reviewer', 'active'), (4, 'Draft Applicant', 'draft@coverage.test', 'student', 'active')");
 $database->exec('INSERT INTO student_profiles (user_id) VALUES (2), (4)');
@@ -39,17 +36,6 @@ $database->exec("INSERT INTO academic_years (id, label, starts_on, ends_on, is_o
 $database->exec("INSERT INTO applications (id, student_id, academic_program_id, academic_year_id, status, submitted_at) VALUES (40, 2, 1, 1, 'submitted', UTC_TIMESTAMP()), (41, 2, 1, 1, 'interview_scheduled', UTC_TIMESTAMP()), (42, 2, 1, 1, 'accepted', UTC_TIMESTAMP())");
 $admin = ['id' => 1, 'full_name' => 'Coverage Admin', 'role' => 'admin'];
 $reviewer = ['id' => 3, 'full_name' => 'Coverage Reviewer', 'role' => 'reviewer'];
-$backupRoot = sys_get_temp_dir() . DIRECTORY_SEPARATOR . 'admitflow-audit-coverage-' . bin2hex(random_bytes(6));
-mkdir($backupRoot, 0700, true);
-$requiredDumpTables = ['users','student_profiles','academic_years','academic_programs','applications','admission_requirements','application_documents','document_reviews','reviewer_assignments','screening_notes','interviews','enrollment_records','announcements','notifications','application_status_history','audit_logs','password_reset_tokens','login_attempts','backups','system_settings'];
-$dumpWriter = static function (string $target) use ($requiredDumpTables): int {
-    $dump = "-- MySQL dump 10.13\n";
-    foreach ($requiredDumpTables as $table) $dump .= 'CREATE TABLE `' . $table . "` (id INTEGER);\n";
-    $dump .= "-- Dump completed on 2026-11-02 00:00:00\n-- fixture padding " . str_repeat('x', 1200) . "\n";
-    file_put_contents($target, $dump);
-    return 0;
-};
-
 $cases = [
     'application.archived' => static function () use ($database, $admin): void {
         StaffService::archiveApplication($database, $admin, 40);
@@ -87,9 +73,6 @@ $cases = [
     'enrollment.checklist_updated' => static function () use ($database, $admin): void {
         StaffService::updateEnrollmentChecklist($database, $admin, 42, ['offer_confirmed', 'documents_checked', 'instructions_sent', 'registration_ready']);
     },
-    'backup.created' => static function () use ($database, $admin, $dumpWriter, $backupRoot): void {
-        BackupService::createDatabase($database, $admin, $dumpWriter, $backupRoot);
-    },
 ];
 
 foreach ($cases as $action => $operation) {
@@ -126,8 +109,5 @@ $database->exec("UPDATE audit_logs SET created_at = '2020-01-01 00:00:00' WHERE 
 $viewBeforeExpiry = (int) $database->query("SELECT COUNT(*) FROM audit_logs WHERE action='application.viewed'")->fetchColumn();
 AuditLog::recordOncePerWindow($database, $reviewer, 'application.viewed', 'application', 40, 600);
 $assert((int) $database->query("SELECT COUNT(*) FROM audit_logs WHERE action='application.viewed'")->fetchColumn() === $viewBeforeExpiry + 1, 'detail-view event is eligible again after the ten-minute window');
-
-foreach (glob($backupRoot . DIRECTORY_SEPARATOR . '*') ?: [] as $backupPath) if (is_file($backupPath)) unlink($backupPath);
-@rmdir($backupRoot);
 
 fwrite(STDOUT, 'Audit coverage tests passed: ' . $assertions . PHP_EOL);

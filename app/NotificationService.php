@@ -211,9 +211,6 @@ final class NotificationService
         $relatedType = (string) ($notification['related_type'] ?? '');
         $relatedId = (int) ($notification['related_id'] ?? 0);
         $role = (string) $user['role'];
-        if ($relatedType === 'backup' && $role === 'admin') {
-            return '/staff/backups';
-        }
         if ($relatedType === 'application' && $relatedId > 0) {
             return self::applicationHref($database, $user, $relatedId);
         }
@@ -381,13 +378,6 @@ final class NotificationService
         $enrollment = (int) $database->query("SELECT COUNT(*) FROM applications a JOIN enrollment_records er ON er.application_id = a.id WHERE a.deleted_at IS NULL AND a.status = 'accepted' AND er.status IN ('pending', 'in_progress')")->fetchColumn();
         if ($enrollment > 0) {
             self::addAlert($alerts, 'admin:enrollment-tasks', 'Enrollment tasks require action', $enrollment . ' accepted application' . ($enrollment === 1 ? ' has' : 's have') . ' enrollment preparation in progress.', '/admin#applications');
-        }
-        $failedBackups = (int) $database->query("SELECT COUNT(*) FROM backups WHERE verification_status = 'failed'")->fetchColumn();
-        $failedAuditQuery = $database->prepare("SELECT COUNT(*) FROM audit_logs WHERE entity_type = 'backup' AND outcome = 'failure' AND created_at >= :cutoff");
-        $failedAuditQuery->execute(['cutoff' => gmdate('Y-m-d H:i:s', time() - 30 * 86400)]);
-        $failedAudit = (int) $failedAuditQuery->fetchColumn();
-        if ($failedBackups + $failedAudit > 0) {
-            self::addAlert($alerts, 'admin:backup-failures', 'Backup issues recorded', ($failedBackups + $failedAudit) . ' backup verification or operation failure' . ($failedBackups + $failedAudit === 1 ? ' is' : 's are') . ' recorded.', '/staff/backups');
         }
         $deadline = $database->prepare('SELECT id, label, application_deadline FROM academic_years WHERE is_open = 1 AND application_deadline >= :today AND application_deadline <= :soon ORDER BY application_deadline LIMIT 1');
         $deadline->execute(['today' => gmdate('Y-m-d'), 'soon' => gmdate('Y-m-d', time() + 14 * 86400)]);

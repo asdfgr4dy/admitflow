@@ -874,10 +874,32 @@
             try {
                 const response = await fetch(path, { method: 'POST', credentials: 'same-origin', headers: { 'Accept': 'application/json', 'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8' }, body });
                 const result = await response.json().catch(() => ({ ok: false }));
-                return { ok: response.ok && result.ok === true, message: result.message || 'The notification could not be updated.' };
+                return { ok: response.ok && result.ok === true, message: result.message || 'The notification could not be updated.', unreadCount: Number.isInteger(result.unread_count) ? result.unread_count : null };
             } catch {
                 return { ok: false, message: 'Could not update the notification. Please try again.' };
             }
+        };
+        const updateUnreadCount = count => {
+            if (!Number.isInteger(count)) return;
+            const countLabel = notificationPanel.querySelector('[data-notification-unread-count]');
+            const badge = notificationToggle.querySelector('.notification-badge');
+            if (countLabel) countLabel.textContent = `${count} unread`;
+            notificationToggle.setAttribute('aria-label', `Notifications${count > 0 ? `, ${count} unread` : ''}`);
+            if (count > 0) {
+                const nextBadge = badge || document.createElement('span');
+                nextBadge.className = 'notification-badge';
+                nextBadge.textContent = count > 99 ? '99+' : String(count);
+                if (!badge) notificationToggle.append(nextBadge);
+            } else badge?.remove();
+        };
+        const updateNotificationItem = (button, count) => {
+            const item = button.closest('.notification-dropdown-item');
+            if (button.dataset.derivedKey) item?.remove();
+            else {
+                item?.classList.remove('is-unread');
+                button.remove();
+            }
+            updateUnreadCount(count);
         };
         notificationToggle.addEventListener('click', () => {
             const opening = notificationPanel.hidden;
@@ -892,27 +914,51 @@
                 const derivedKey = notificationLink.dataset.derivedKey;
                 if (notificationId || derivedKey) {
                     event.preventDefault();
-                    try {
-                        await postNotificationAction(notificationId ? '/notifications/read' : '/notifications/dismiss-derived', notificationId ? { notification_id: notificationId } : { key: derivedKey });
-                    } catch {
+                    if (notificationLink.dataset.pending === 'true') return;
+                    notificationLink.dataset.pending = 'true';
+                    notificationLink.setAttribute('aria-busy', 'true');
+                    const result = await postNotificationAction(notificationId ? '/notifications/read' : '/notifications/dismiss-derived', notificationId ? { notification_id: notificationId } : { key: derivedKey });
+                    if (!result.ok) {
+                        delete notificationLink.dataset.pending;
+                        notificationLink.removeAttribute('aria-busy');
+                        showToast('danger', result.message);
+                        return;
                     }
+                    updateUnreadCount(result.unreadCount);
                     window.location.assign(notificationLink.href);
                 }
                 return;
             }
             const markButton = event.target.closest('[data-notification-mark]');
             if (markButton) {
+                if (markButton.disabled) return;
+                markButton.disabled = true;
                 const notificationId = markButton.dataset.notificationId;
                 const derivedKey = markButton.dataset.derivedKey;
                 const result = await postNotificationAction(notificationId ? '/notifications/read' : '/notifications/dismiss-derived', notificationId ? { notification_id: notificationId } : { key: derivedKey });
                 showToast(result.ok ? 'success' : 'danger', result.message);
-                if (result.ok) window.setTimeout(() => window.location.reload(), 4500);
+                if (result.ok) updateNotificationItem(markButton, result.unreadCount);
+                else markButton.disabled = false;
                 return;
             }
-            if (event.target.closest('[data-notification-mark-all]')) {
+            const markAllButton = event.target.closest('[data-notification-mark-all]');
+            if (markAllButton) {
+                if (markAllButton.disabled) return;
+                markAllButton.disabled = true;
                 const result = await postNotificationAction('/notifications/read-all');
                 showToast(result.ok ? 'success' : 'danger', result.message);
-                if (result.ok) window.setTimeout(() => window.location.reload(), 4500);
+                if (result.ok) {
+                    notificationPanel.querySelectorAll('.notification-dropdown-item').forEach(item => item.remove());
+                    markAllButton.remove();
+                    const emptyState = notificationPanel.querySelector('.notification-dropdown-empty');
+                    if (!emptyState) {
+                        const content = document.createElement('div');
+                        content.className = 'notification-dropdown-empty';
+                        content.innerHTML = '<i class="bi bi-bell" aria-hidden="true"></i><strong>You’re all caught up</strong><span>New updates will appear here.</span>';
+                        notificationPanel.append(content);
+                    }
+                    updateUnreadCount(result.unreadCount);
+                } else markAllButton.disabled = false;
             }
         });
         document.addEventListener('click', event => {
@@ -1569,7 +1615,8 @@
             const emailLocalPart = emailHint.split('@', 1)[0];
             const nameParts = nameHint.split(/[^\p{L}\p{M}]+/u).filter(part => Array.from(part).length >= 4);
             const emailParts = emailLocalPart.split(/[^\p{L}\p{M}\p{N}]+/u).filter(part => Array.from(part).length >= 4);
-            const hints = [nameHint, emailLocalPart, ...nameParts, ...emailParts].map(normalize).filter(Boolean);
+            const meaningful = hint => Array.from(normalize(hint).replace(/[^\p{L}\p{M}\p{N}]/gu, '')).length >= 4;
+            const hints = [nameHint, emailLocalPart, ...nameParts, ...emailParts].filter(meaningful).map(normalize);
             const personalValid = !hints.some(hint => normalize(value).includes(hint));
             const matchEvaluated = Boolean(confirmation?.value || value);
             const matchValid = Boolean(confirmation?.value) && normalizedValue === normalizeNfkc(confirmation.value);

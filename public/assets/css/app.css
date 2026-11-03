@@ -737,7 +737,7 @@ h1 em, h2 em { color: #8B5C15; font-style: italic; }
 .staff-reports-page .report-date-filter { min-width: 170px; }
 .admin-dashboard-page .metric-grid { grid-template-columns: repeat(5,minmax(0,1fr)); }
 .admin-dashboard-page > .dashboard-charts { margin-top: 0; }
-.admin-dashboard-page .staff-heading .eyebrow, .admin-settings-page .staff-heading .eyebrow, .admin-users-page .staff-heading .eyebrow, .admin-backups-page .staff-heading .eyebrow, .admin-audit-page .staff-heading .eyebrow { color: #084884; }
+.admin-dashboard-page .staff-heading .eyebrow, .admin-settings-page .staff-heading .eyebrow, .admin-users-page .staff-heading .eyebrow, .admin-audit-page .staff-heading .eyebrow { color: #084884; }
 .admin-settings-page .settings-section, .admin-users-page .settings-section { margin-bottom: 18px; padding: 22px; border: 1px solid #D9E4DF; border-radius: 8px; background: #FFFFFF; box-shadow: 0 5px 18px rgba(22,51,74,.035); }
 .admin-settings-page .settings-section .section-heading, .admin-users-page .settings-section .section-heading { margin-bottom: 16px; }
 .admin-settings-page .settings-section .section-heading .eyebrow, .admin-users-page .settings-section .section-heading .eyebrow { color: #39775F; }
@@ -751,23 +751,10 @@ h1 em, h2 em { color: #8B5C15; font-style: italic; }
 .admin-settings-page .settings-toggle input, .admin-users-page .settings-toggle input { accent-color: #39775F; }
 .admin-settings-page .announcement-editor { border-color: #DCE6E1; }
 .admin-settings-page .announcement-record { margin-top: 10px; }
-.admin-users-page .staff-table-wrap, .admin-backups-page .staff-table-wrap, .admin-audit-page .staff-table-wrap { contain: layout paint; border-radius: 7px; }
-.admin-users-page, .admin-backups-page, .admin-audit-page { overflow-x: clip; }
+.admin-users-page .staff-table-wrap, .admin-audit-page .staff-table-wrap { contain: layout paint; border-radius: 7px; }
+.admin-users-page, .admin-audit-page { overflow-x: clip; }
 .admin-users-page .staff-section .section-heading, .admin-audit-page .staff-section .section-heading { align-items: center; }
 .admin-users-page .alert-info { border-color: #C9D9E5; border-radius: 6px; background: #EFF5F8; color: #234E6B; }
-.admin-backups-page .backup-action-grid { gap: 14px; }
-.admin-backups-page .backup-action-grid .portal-panel { min-width: 0; padding: 22px; border: 1px solid #D9E4DF; border-radius: 8px; background: #FFFFFF; box-shadow: 0 5px 18px rgba(22,51,74,.035); }
-.admin-backups-page .backup-action-grid .eyebrow { color: #39775F; }
-.admin-backups-page .backup-action-grid h2 { color: #16334A; font-family: var(--sans); font-size: 1.25rem; font-weight: 800; }
-.admin-backups-page .backup-action-grid p:not(.eyebrow) { min-height: 56px; color: #526773; font-size: .86rem; }
-.admin-backups-page .staff-table td code { overflow-wrap: anywhere; color: #405966; font-size: .72rem; }
-.admin-backups-page .status-pill { border-radius: 99px; }
-.admin-backups-page .restore-warning { padding: 20px; border: 1px solid #E8C8A5; border-radius: 7px; background: #FFF8ED; }
-.admin-backups-page .restore-warning .eyebrow { color: #8E572C; }
-.admin-backups-page .restore-warning h2 { color: #513D2D; font-family: var(--sans); font-size: 1.25rem; font-weight: 800; }
-.admin-backups-page .backup-restore-form { display: grid; min-width: 132px; gap: 5px; }
-.admin-backups-page .backup-restore-form .form-control { min-width: 0; }
-.admin-backups-page .backup-restore-form .btn { justify-self: start; }
 .admin-audit-page .filter-bar { grid-template-columns: minmax(220px,1.6fr) repeat(3,minmax(135px,.8fr)) auto; }
 .admin-audit-page .audit-filter-actions { flex-wrap: nowrap; align-items: center; }
 .admin-audit-page .audit-filter-actions .btn { display: inline-flex; flex: 0 0 auto; align-items: center; justify-content: center; gap: 6px; white-space: nowrap; }
@@ -1241,15 +1228,6 @@ img.document-preview-media { width: auto; max-width: 100%; height: auto; max-hei
 .user-edit-form { display: grid; grid-template-columns: minmax(130px, .7fr) minmax(130px, .7fr) minmax(190px, 1fr) auto; align-items: center; gap: 8px; }
 .user-edit-form .form-select { min-height: 38px; font-size: .8rem; }
 .user-dates { display: flex; flex-direction: column; color: var(--muted); font-size: .74rem; }
-.backup-action-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; margin-bottom: 38px; }
-.backup-action-grid .portal-panel h2 { margin-bottom: 10px; font-family: var(--serif); font-size: 1.65rem; font-weight: 400; }
-.backup-action-grid .portal-panel p:not(.eyebrow) { min-height: 72px; color: var(--muted); font-size: .87rem; }
-.backup-row-actions { display: flex; flex-wrap: wrap; gap: 6px; }
-.backup-row-actions form { margin: 0; }
-.restore-warning { margin-top: 30px; padding: 22px; border: 1px solid #D8B88E; background: #FBF4E9; }
-.restore-warning h2 { margin-bottom: 9px; font-family: var(--serif); font-size: 1.7rem; }
-.restore-warning p:not(.eyebrow) { color: #665847; font-size: .88rem; }
-
 @keyframes reveal-up { from { opacity: 0; transform: translateY(12px); } to { opacity: 1; transform: translateY(0); } }
 
 @media (max-width: 991.98px) {
@@ -1420,16 +1398,13 @@ img.document-preview-media { width: auto; max-width: 100%; height: auto; max-hei
     .application-primary-filters .search-field, .application-primary-actions, .application-advanced-grid > .application-filter:first-child { grid-column: auto; }
     .application-active-filters { align-items: flex-start; }
     .user-edit-form { min-width: 230px; }
-    .backup-action-grid { grid-template-columns: 1fr; }
     .admin-settings-page .settings-section, .admin-users-page .settings-section { padding: 15px; }
     .admin-settings-page .settings-inline-form, .admin-settings-page .settings-record, .admin-settings-page .settings-year-form, .admin-settings-page .settings-year-record { grid-template-columns: 1fr; }
     .admin-settings-page .requirement-create-form, .admin-settings-page .requirement-record, .admin-settings-page .announcement-editor, .admin-users-page .user-create-form { grid-template-columns: 1fr; }
     .admin-settings-page .field-wide { grid-column: auto; }
     .admin-users-page .staff-table { min-width: 850px; }
     .user-category-nav { position: static; }
-    .admin-backups-page .staff-table { min-width: 1050px; }
     .admin-audit-page .staff-table { min-width: 900px; }
-    .admin-backups-page .restore-warning { padding: 16px; }
 }
 
 @media (min-width: 768px) and (max-width: 991.98px) {

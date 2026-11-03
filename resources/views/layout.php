@@ -54,7 +54,6 @@ if ($signedInUser !== null) {
                 ['label' => 'Requirements', 'href' => '/staff/academic/requirements'],
             ]],
             ['label' => 'Audit log', 'href' => '/staff/audit', 'icon' => 'bi-journal-text'],
-            ['label' => 'Backups & restore', 'href' => '/staff/backups', 'icon' => 'bi-archive'],
             ['label' => 'Settings', 'href' => '/settings', 'icon' => 'bi-gear'],
         ],
         default => [],
@@ -166,13 +165,13 @@ if ($signedInUser !== null) {
                         <i class="bi bi-bell" aria-hidden="true"></i><?php if ($notificationFeed['unread_count'] > 0): ?><span class="notification-badge"><?= (int) $notificationFeed['unread_count'] > 99 ? '99+' : (int) $notificationFeed['unread_count'] ?></span><?php endif; ?>
                     </button>
                     <section class="notification-dropdown" id="notification-panel" aria-label="Notifications" data-notification-panel hidden>
-                        <div class="notification-dropdown-heading"><div><p class="eyebrow">Account updates</p><h2>Notifications</h2></div><span><?= (int) $notificationFeed['unread_count'] ?> unread</span></div>
+                        <div class="notification-dropdown-heading"><div><p class="eyebrow">Account updates</p><h2>Notifications</h2></div><span data-notification-unread-count><?= (int) $notificationFeed['unread_count'] ?> unread</span></div>
                         <?php if ($notificationFeed['items'] !== []): ?>
                             <div class="notification-dropdown-list">
                                 <?php foreach ($notificationFeed['items'] as $notice): ?>
-                                    <?php $noticeTime = (new DateTimeImmutable($notice['created_at'], new DateTimeZone('UTC')))->setTimezone(new DateTimeZone('Asia/Manila')); ?>
+                                    <?php $noticeTime = (new DateTimeImmutable($notice['created_at'], new DateTimeZone('UTC')))->setTimezone(new DateTimeZone('Asia/Manila')); $noticeAnchor = 'notification-' . (!empty($notice['derived']) ? 'derived-' . substr(hash('sha256', (string) $notice['key']), 0, 16) : (string) (int) $notice['id']); ?>
                                     <article class="notification-dropdown-item <?= $notice['read_at'] ? '' : 'is-unread' ?>">
-                                        <a href="<?= e($notice['href']) ?>" data-notification-link <?= !empty($notice['derived']) ? 'data-derived-key="' . e($notice['key']) . '"' : 'data-notification-id="' . (int) $notice['id'] . '"' ?>>
+                                        <a href="/notifications#<?= e($noticeAnchor) ?>" data-notification-link <?= !empty($notice['derived']) ? 'data-derived-key="' . e($notice['key']) . '"' : 'data-notification-id="' . (int) $notice['id'] . '"' ?>>
                                             <span class="notification-dropdown-title"><?= e($notice['title']) ?></span>
                                             <span class="notification-dropdown-message"><?= e($notice['message']) ?></span>
                                             <time datetime="<?= e($noticeTime->format(DateTimeInterface::ATOM)) ?>"><?= e($noticeTime->format('M j, g:i A')) ?> Asia/Manila</time>

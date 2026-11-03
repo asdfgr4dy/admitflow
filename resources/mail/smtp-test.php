@@ -1,0 +1,7 @@
+<?php
+$safeName = htmlspecialchars($recipientName, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
+return [
+    'subject' => 'AdmitFlow SMTP test message',
+    'text' => "Hello {$recipientName},\n\nThis message confirms that the configured AdmitFlow SMTP transport accepted a test message. It does not confirm inbox delivery.\n\nAdmitFlow Admissions Office",
+    'html' => '<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>SMTP test</title></head><body style="margin:0;background:#f2f6f4;color:#172c3c;font-family:Arial,Helvetica,sans-serif"><table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="background:#f2f6f4;padding:28px 12px"><tr><td align="center"><table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="max-width:600px;background:#fff;border-top:5px solid #20384b"><tr><td style="padding:28px 32px;font-size:16px;line-height:1.65"><p style="color:#55715f;font-size:12px;font-weight:bold">ADMITFLOW · ADMISSIONS OFFICE</p><h1 style="color:#20384b">SMTP test</h1><p>Hello ' . $safeName . ',</p><p>The configured AdmitFlow SMTP transport accepted this test message. This does not confirm inbox delivery.</p></td></tr></table></td></tr></table></body></html>',
+];

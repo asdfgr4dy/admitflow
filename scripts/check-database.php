@@ -22,7 +22,6 @@ $requiredTables = [
     'audit_logs',
     'password_reset_tokens',
     'login_attempts',
-    'backups',
     'system_settings',
 ];
 

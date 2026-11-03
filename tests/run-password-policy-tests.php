@@ -49,6 +49,7 @@ $assert(str_contains($staffScript, 'SecurityPolicy::generatePassword') && str_co
 $assert(in_array('Password must not contain your name or email address.', $errors('Alexandria!2026', ['name' => 'Alexandria Example']), true), 'name part containment rejects');
 $assert(in_array('Password must not contain your name or email address.', $errors('contactJsmith42!', ['email' => 'jsmith42@example.test']), true), 'email local-part containment rejects');
 $assert($errors('Ab1!shortname', ['name' => 'Li Q']) === [], 'short name components do not become independent personal hints');
+$assert($errors('Ab1!Li Qxyz0', ['name' => 'Li Q', 'email' => 'xy@example.test']) === [], 'short full-name and email-local hints do not reject passwords containing them verbatim');
 $assert(in_array('Password must not be a repeated character or an obvious sequence.', $errors('aaaaaaaaaaaa'), true), 'repeated character rejects');
 $assert(in_array('Password must not be a repeated character or an obvious sequence.', $errors('prefix12345678suffix'), true), 'ascending sequence within a longer value rejects');
 $assert(in_array('Password must not be a repeated character or an obvious sequence.', $errors('zyxwvutsrqponm'), true), 'descending alphabetic sequence rejects');
@@ -77,6 +78,7 @@ $renderedViews = [
 $requiredChecklistMessages = ['At least 12 characters', 'Mix 3 of 4 character types, or use at least 16 characters', 'Does not contain your name or email', 'Passwords match', 'Common-password validation is checked securely when you submit.'];
 foreach ($renderedViews as $viewIndex => $markup) {
     $assert(str_contains($markup, 'data-password-checklist') && str_contains($markup, 'aria-live="polite"'), 'auth password view ' . ($viewIndex + 1) . ' renders an announced shared checklist');
+    $assert(str_contains($markup, 'id="password-checklist"'), 'auth password view ' . ($viewIndex + 1) . ' uses the checklist ID expected by the client initializer');
     foreach ($requiredChecklistMessages as $message) {
         $assert(str_contains($markup, $message), 'auth password view ' . ($viewIndex + 1) . ' renders checklist message: ' . $message);
     }

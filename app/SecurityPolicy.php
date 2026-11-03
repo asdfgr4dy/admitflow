@@ -215,7 +215,8 @@ final class SecurityPolicy
         $email = is_string($context['email'] ?? null) ? $context['email'] : '';
         if ($email !== '') {
             $localPart = explode('@', $email, 2)[0];
-            if ($localPart !== '') {
+            $localPartCharacters = preg_replace('/[^\p{L}\p{M}\p{N}]/u', '', self::normalizeHint($localPart));
+            if (is_string($localPartCharacters) && mb_strlen($localPartCharacters, 'UTF-8') >= 4) {
                 $hints[] = $localPart;
                 foreach (preg_split('/[^\p{L}\p{M}\p{N}]+/u', $localPart, -1, PREG_SPLIT_NO_EMPTY) ?: [] as $part) {
                     if (mb_strlen($part, 'UTF-8') >= 4) {
@@ -230,7 +231,10 @@ final class SecurityPolicy
             if ($name === '') {
                 continue;
             }
-            $hints[] = $name;
+            $nameCharacters = preg_replace('/[^\p{L}\p{M}\p{N}]/u', '', self::normalizeHint($name));
+            if (is_string($nameCharacters) && mb_strlen($nameCharacters, 'UTF-8') >= 4) {
+                $hints[] = $name;
+            }
             foreach (preg_split('/[^\p{L}\p{M}]+/u', $name, -1, PREG_SPLIT_NO_EMPTY) ?: [] as $part) {
                 if (mb_strlen($part, 'UTF-8') >= 4) {
                     $hints[] = $part;

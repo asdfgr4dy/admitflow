@@ -8,10 +8,8 @@ require dirname(__DIR__) . '/app/AnnouncementService.php';
 require dirname(__DIR__) . '/app/Pagination.php';
 require dirname(__DIR__) . '/app/StaffService.php';
 require dirname(__DIR__) . '/app/ReportExport.php';
+require dirname(__DIR__) . '/app/MailService.php';
 require dirname(__DIR__) . '/app/PasswordResetService.php';
-require dirname(__DIR__) . '/app/BackupIntegrity.php';
-require dirname(__DIR__) . '/app/BackupService.php';
-require dirname(__DIR__) . '/app/AutomatedBackupRunner.php';
 require dirname(__DIR__) . '/app/NotificationService.php';
 require dirname(__DIR__) . '/app/AccountSettingsService.php';
 require dirname(__DIR__) . '/app/StaffAccountService.php';
@@ -75,6 +73,35 @@ try {
             PasswordResetService::request($database, (string) ($_POST['email'] ?? ''));
             flash('success', 'If an account exists for that email address, reset instructions will be sent.');
             redirect('/forgot-password');
+        }
+
+        if ($path === '/staff/user/invitation/resend') {
+            $user = current_user();
+            if ($user === null) redirect('/login');
+            if (($user['role'] ?? '') !== 'admin') {
+                http_response_code(403);
+                exit('Administrator access is required to send staff invitations.');
+            }
+            try {
+                $invitation = StaffAccountService::sendInvitation($database, $user, (int) ($_POST['user_id'] ?? 0));
+                flash($invitation['ok'] ? 'success' : 'warning', $invitation['ok'] ? 'The invitation email was accepted by the SMTP provider.' : 'The invitation email was not sent. ' . $invitation['message']);
+            } catch (DomainException $error) {
+                flash('warning', $error->getMessage());
+            }
+            redirect('/staff/users/staff');
+        }
+
+        if ($path === '/settings/system/mail-test') {
+            $user = current_user();
+            if ($user === null) redirect('/login');
+            if (($user['role'] ?? '') !== 'admin') {
+                http_response_code(403);
+                exit('Administrator access is required to test SMTP.');
+            }
+            $testResult = MailService::sendTestMessage((string) ($_POST['recipient'] ?? ''));
+            AuditLog::record($database, $user, 'system.smtp_test', 'system', null, $testResult['ok'] ? 'success' : 'failure', ['reason' => $testResult['ok'] ? 'provider_accepted' : 'not_accepted'], $testResult['ok'] ? 'notice' : 'warning');
+            flash($testResult['ok'] ? 'success' : 'warning', $testResult['message']);
+            redirect('/settings/system');
         }
 
         if ($path === '/logout') {
@@ -217,7 +244,8 @@ try {
                 if (!$actionSucceeded) {
                     http_response_code(404);
                 }
-                echo json_encode(['ok' => $actionSucceeded, 'message' => $actionSucceeded ? $actionMessage : 'This notification could not be updated.']);
+                $unreadCount = $actionSucceeded ? NotificationService::feed($database, $user, $dismissed)['unread_count'] : null;
+                echo json_encode(['ok' => $actionSucceeded, 'message' => $actionSucceeded ? $actionMessage : 'This notification could not be updated.', 'unread_count' => $unreadCount]);
                 exit;
             }
             flash($actionSucceeded ? 'success' : 'warning', $actionSucceeded ? $actionMessage : 'This notification could not be updated.');
@@ -563,8 +591,8 @@ try {
                     $userId = (int) ($_POST['user_id'] ?? 0);
                     if ($userId === 0) {
                         $createdAccount = StaffAccountService::create($database, $user, (string) ($_POST['full_name'] ?? ''), (string) ($_POST['email'] ?? ''), (string) ($_POST['role'] ?? ''));
-                        $_SESSION['staff_setup_link'] = $createdAccount['setup_path'];
-                        flash('success', 'Staff account created. Share the one-time password setup link securely within 30 minutes. No email was sent.');
+                        $invitation = $createdAccount['invitation'];
+                        flash($invitation['ok'] ? 'success' : 'warning', $invitation['ok'] ? 'Staff account created and the invitation email was accepted by the SMTP provider.' : 'Staff account created, but the invitation email could not be delivered. ' . $invitation['message'] . ' You can resend it after correcting the mail configuration.');
                         redirect('/staff/users/staff');
                     } else {
                         $targetQuery = $database->prepare('SELECT id, role, account_status FROM users WHERE id = :id');
@@ -607,114 +635,6 @@ try {
                             'student' => '/staff/users/students',
                             default => '/staff/users/staff',
                         });
-                }
-                if (in_array($path, ['/staff/backup/database', '/staff/backup/files'], true)) {
-                    if ($user['role'] !== 'admin') {
-                        throw new DomainException('Administrator access is required to create backups.');
-                    }
-                    $backupContext = [
-                        'request_id' => bin2hex(random_bytes(12)),
-                        'type' => $path === '/staff/backup/database' ? 'database' : 'files',
-                        'stage' => 'request-authorized',
-                        'started_at' => gmdate(DATE_ATOM),
-                        'started_clock' => microtime(true),
-                        'output_committed' => false,
-                    ];
-                    $GLOBALS['admitflow_backup_context'] = $backupContext;
-                    BackupService::logRequestEvent($backupContext + ['event' => 'started']);
-                    register_shutdown_function(static function (): void {
-                        $fatal = error_get_last();
-                        $context = $GLOBALS['admitflow_backup_context'] ?? null;
-                        if (!is_array($context)) return;
-                        if (is_array($fatal) && in_array($fatal['type'], [E_ERROR, E_PARSE, E_CORE_ERROR, E_COMPILE_ERROR, E_USER_ERROR], true)) {
-                            BackupService::logRequestEvent($context + [
-                                'event' => 'fatal',
-                                'elapsed_seconds' => (int) (microtime(true) - $context['started_clock']),
-                                'fatal_type' => $fatal['type'],
-                                'fatal_line' => (int) ($fatal['line'] ?? 0),
-                            ]);
-                            if (empty($context['output_committed']) && isset($context['output_path']) && is_string($context['output_path'])) {
-                                $backupRoot = realpath(dirname(__DIR__) . '/storage/backups');
-                                $outputPath = $context['output_path'];
-                                $outputDirectory = realpath(dirname($outputPath));
-                                $expectedPrefix = $context['type'] === 'files' ? 'files-' : 'database-';
-                                if ($backupRoot !== false && $outputDirectory === $backupRoot
-                                    && preg_match('/^' . preg_quote($expectedPrefix, '/') . '\\d{8}-\\d{6}-[a-f0-9]{12}\\.(?:tar|sql)$/', basename($outputPath))
-                                    && is_file($outputPath)) {
-                                    $removed = @unlink($outputPath);
-                                    BackupService::logRequestEvent($context + ['event' => $removed ? 'fatal-output-cleaned' : 'fatal-output-cleanup-failed']);
-                                }
-                            }
-                            return;
-                        }
-                        $context['stage'] = 'request-finished';
-                    });
-                    try {
-                        $GLOBALS['admitflow_backup_context']['stage'] = 'service-call';
-                        if ($path === '/staff/backup/database') {
-                            BackupService::createDatabase($database, $user);
-                        } else {
-                            BackupService::createFiles($database, $user);
-                        }
-                        $GLOBALS['admitflow_backup_context']['stage'] = 'service-completed';
-                        BackupService::logRequestEvent($GLOBALS['admitflow_backup_context'] + [
-                            'event' => 'completed',
-                            'elapsed_seconds' => (int) (microtime(true) - $backupContext['started_clock']),
-                        ]);
-                        flash('success', 'Backup created and verified.');
-                    } catch (Throwable $error) {
-                        $failureContext = $GLOBALS['admitflow_backup_context'] ?? $backupContext;
-                        BackupService::logRequestEvent($failureContext + [
-                            'event' => 'failed',
-                            'elapsed_seconds' => (int) (microtime(true) - $failureContext['started_clock']),
-                            'exception_class' => $error::class,
-                            'diagnostic' => $error->getMessage(),
-                        ]);
-                        flash('warning', 'Backup did not complete or could not be verified. No successful backup is recorded.');
-                    } finally {
-                        unset($GLOBALS['admitflow_backup_context']);
-                    }
-                    redirect('/staff/backups');
-                }
-                if ($path === '/staff/backup/verify') {
-                    if ($user['role'] !== 'admin') {
-                        throw new DomainException('Administrator access is required to verify backups.');
-                    }
-                    $verified = BackupService::verify($database, $user, (int) ($_POST['backup_id'] ?? 0));
-                    flash($verified ? 'success' : 'warning', $verified ? 'Backup checksum and structure verified.' : 'Backup verification failed. Do not restore this file.');
-                    redirect('/staff/backups');
-                }
-                if ($path === '/staff/backup/restore') {
-                    if ($user['role'] !== 'admin') {
-                        throw new DomainException('Administrator access is required to restore database backups.');
-                    }
-                    $backupId = (int) ($_POST['backup_id'] ?? 0);
-                    try {
-                        $safetyBackupId = BackupService::restoreDatabase($database, $user, $backupId, (string) ($_POST['confirmation'] ?? ''));
-                        flash('success', 'Database backup restored. Safety backup #' . $safetyBackupId . ' is retained in backup history.');
-                    } catch (DomainException $error) {
-                        throw $error;
-                    } catch (Throwable $error) {
-                        error_log('[admitflow backup] Database restore failed (' . $error::class . ').');
-                        flash('warning', 'Restore could not be completed. Review the server log and the verified safety backup before attempting recovery.');
-                    }
-                    redirect('/staff/backups');
-                }
-                if ($path === '/staff/backup/restore-files') {
-                    if ($user['role'] !== 'admin') {
-                        throw new DomainException('Administrator access is required to restore file backups.');
-                    }
-                    $backupId = (int) ($_POST['backup_id'] ?? 0);
-                    try {
-                        $safetyBackupId = BackupService::restoreFiles($database, $user, $backupId, (string) ($_POST['confirmation'] ?? ''));
-                        flash('success', 'File archive restored. Verified safety backup #' . $safetyBackupId . ' is retained in backup history.');
-                    } catch (DomainException $error) {
-                        throw $error;
-                    } catch (Throwable $error) {
-                        error_log('[admitflow backup] File archive restore failed (' . $error::class . ').');
-                        flash('warning', 'File restoration failed and may be partial. Review the retained verified safety archive before attempting recovery.');
-                    }
-                    redirect('/staff/backups');
                 }
                 if ($path === '/staff/reports.csv') {
                     $report = StaffService::applications($database, $user, $_POST, true);
@@ -905,9 +825,6 @@ try {
                         default => '/staff/users/staff',
                     });
                 }
-                if ($path === '/staff/backup/restore') {
-                    redirect('/staff/backups');
-                }
                 $applicationId = (int) ($_POST['application_id'] ?? 0);
                 if ($path === '/staff/application/claim' && $applicationId > 0) {
                     redirect('/staff/application/' . $applicationId);
@@ -1080,7 +997,7 @@ try {
             $databaseHealth = (int) $database->query('SELECT 1')->fetchColumn() === 1 ? 'Connected' : 'Unavailable';
         } catch (Throwable) {
         }
-        render_page('settings/system', ['title' => 'System Settings', 'user' => $user, 'systemInfo' => ['name' => 'AdmitFlow', 'office' => 'Admission Office', 'version' => 'Not configured', 'environment' => $environment, 'database' => $databaseHealth, 'password_reset_smtp' => PasswordResetDelivery::hasSmtpConfiguration() ? 'Configured' : 'Not configured', 'timezone' => date_default_timezone_get()]]);
+        render_page('settings/system', ['title' => 'System Settings', 'user' => $user, 'systemInfo' => ['name' => 'AdmitFlow', 'office' => 'Admission Office', 'version' => 'Not configured', 'environment' => $environment, 'database' => $databaseHealth, 'mail' => MailService::configurationStatus(), 'timezone' => date_default_timezone_get()]]);
         exit;
     }
 
@@ -1672,7 +1589,7 @@ try {
             $pagination = Pagination::make($accountTotals[$accountRole], $_GET, $pageKey, 'per_page', 20);
             $applicationStatusSelect = $accountRole === 'student' ? ', (SELECT app.status FROM applications app WHERE app.student_id = users.id AND app.deleted_at IS NULL ORDER BY app.updated_at DESC, app.id DESC LIMIT 1) AS application_status, (SELECT app.reference_number FROM applications app WHERE app.student_id = users.id AND app.deleted_at IS NULL ORDER BY app.updated_at DESC, app.id DESC LIMIT 1) AS applicant_id, (SELECT app.id FROM applications app WHERE app.student_id = users.id AND app.deleted_at IS NULL AND app.status <> \'draft\' ORDER BY app.updated_at DESC, app.id DESC LIMIT 1) AS reviewable_application_id, profile.mobile_number, profile.date_of_birth, profile.address_line, profile.municipality, profile.province' : '';
             $profileJoin = $accountRole === 'student' ? ' LEFT JOIN student_profiles profile ON profile.user_id = users.id' : '';
-            $query = $database->prepare('SELECT id, full_name, email, role, account_status, last_login_at, created_at' . $applicationStatusSelect . ' FROM users' . $profileJoin . ' WHERE ' . $whereSql . ' ORDER BY created_at DESC, id DESC LIMIT ' . $pagination['page_size'] . ' OFFSET ' . $pagination['offset']);
+            $query = $database->prepare('SELECT id, full_name, email, role, account_status, must_change_password, last_login_at, created_at' . $applicationStatusSelect . ' FROM users' . $profileJoin . ' WHERE ' . $whereSql . ' ORDER BY created_at DESC, id DESC LIMIT ' . $pagination['page_size'] . ' OFFSET ' . $pagination['offset']);
             $query->execute($parameters);
             $accountsByRole[$accountRole] = $query->fetchAll();
             $pagination['page_key'] = $pageKey;
@@ -1686,61 +1603,12 @@ try {
             ['key' => 'student', 'id' => 'student-accounts', 'title' => 'Student accounts'],
         ];
         $userCategories = array_values(array_filter($allUserCategories, static fn (array $category): bool => $category['key'] === $roleFilter));
-        $staffSetupLink = $_SESSION['staff_setup_link'] ?? null;
         $staffCreateFormOpen = !empty($_SESSION['staff_create_form_open']);
         $staffCreateFormValues = is_array($_SESSION['staff_create_form_values'] ?? null) ? $_SESSION['staff_create_form_values'] : [];
         unset($_SESSION['staff_create_form_open'], $_SESSION['staff_create_form_values']);
         unset($_SESSION['staff_setup_link']);
         $userPageTitles = ['admin' => 'Administrator Accounts', 'reviewer' => 'Staff Accounts', 'student' => 'Student Accounts'];
-        render_page('staff/users', ['title' => $userPageTitles[$roleFilter], 'user' => $user, 'accountCategory' => $roleFilter, 'accountsByRole' => $accountsByRole, 'accountTotals' => $accountTotals, 'userCategories' => $userCategories, 'paginationByRole' => $paginationByRole, 'userFilters' => $userFilters, 'staffSetupLink' => $staffSetupLink, 'staffCreateFormOpen' => $staffCreateFormOpen, 'staffCreateFormValues' => $staffCreateFormValues]);
-        exit;
-    }
-
-    if ($path === '/staff/backups') {
-        $user = current_user();
-        if ($user === null) {
-            redirect('/login');
-        }
-        if ($user['role'] !== 'admin') {
-            http_response_code(403);
-            render_page('errors/not-ready', ['title' => 'Administrator access required', 'message' => 'Administrator access is required to manage backups.']);
-            exit;
-        }
-        try {
-            $backupPage = BackupService::history($database, $_GET);
-        } catch (DomainException $error) {
-            http_response_code(422);
-            render_page('errors/not-ready', ['title' => 'Check backup filters', 'message' => $error->getMessage()]);
-            exit;
-        }
-        $automatedBackupRuns = AutomatedBackupRunner::recentHistory(dirname(__DIR__) . '/storage/logs/automated-backup-history.jsonl');
-        render_page('staff/backups', ['title' => 'Backups and restore', 'user' => $user, 'backups' => $backupPage['rows'], 'pagination' => $backupPage['pagination'], 'backupFilters' => $backupPage['filters'], 'restoreInstructions' => BackupService::safeRestoreInstructions(), 'automatedBackupRuns' => $automatedBackupRuns]);
-        exit;
-    }
-
-    if (preg_match('#^/staff/backup/(\d+)/download$#', $path, $match)) {
-        $user = current_user();
-        if ($user === null) {
-            redirect('/login');
-        }
-        if ($user['role'] !== 'admin') {
-            http_response_code(403);
-            exit('Administrator access is required.');
-        }
-        $statement = $database->prepare('SELECT storage_name, backup_type, verification_status FROM backups WHERE id = :id');
-        $statement->execute(['id' => (int) $match[1]]);
-        $backup = $statement->fetch();
-        $root = realpath(dirname(__DIR__) . '/storage/backups');
-        $file = $root === false ? false : realpath($root . DIRECTORY_SEPARATOR . basename((string) ($backup['storage_name'] ?? '')));
-        if (!is_array($backup) || $backup['verification_status'] !== 'verified' || $root === false || $file === false || !str_starts_with($file, $root . DIRECTORY_SEPARATOR)) {
-            http_response_code(404);
-            exit('Verified backup not found.');
-        }
-        header('Content-Type: application/octet-stream');
-        header('Content-Length: ' . filesize($file));
-        header('Content-Disposition: attachment; filename="' . rawurlencode(basename($backup['storage_name'])) . '"');
-        AuditLog::record($database, $user, 'backup.downloaded', 'backup', (int) $match[1], 'success', ['backup_type' => $backup['backup_type']], 'notice');
-        readfile($file);
+        render_page('staff/users', ['title' => $userPageTitles[$roleFilter], 'user' => $user, 'accountCategory' => $roleFilter, 'accountsByRole' => $accountsByRole, 'accountTotals' => $accountTotals, 'userCategories' => $userCategories, 'paginationByRole' => $paginationByRole, 'userFilters' => $userFilters, 'staffCreateFormOpen' => $staffCreateFormOpen, 'staffCreateFormValues' => $staffCreateFormValues]);
         exit;
     }
 
