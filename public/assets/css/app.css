@@ -100,13 +100,17 @@ button, input, select { font: inherit; }
 .notification-dropdown-heading { z-index: 1; display: flex; flex: 0 0 auto; align-items: center; justify-content: space-between; gap: 12px; padding: 14px 16px; border-bottom: 1px solid #E4ECE7; background: #FFFFFF; }
 .notification-dropdown-heading .eyebrow { margin: 0 0 3px; color: #39775F; font-size: .63rem; }
 .notification-dropdown-heading h2 { margin: 0; color: #16334A; font-family: var(--sans); font-size: 1rem; font-weight: 800; }
+.notification-dropdown-heading h2 a { color: inherit; text-decoration: none; }
+.notification-dropdown-heading h2 a:hover { color: #084884; text-decoration: underline; }
+.notification-dropdown-heading h2 a:focus-visible { border-radius: 2px; outline: 3px solid #6FA58D; outline-offset: 3px; }
 .notification-dropdown-heading > span { color: #627780; font-size: .7rem; white-space: nowrap; }
 .notification-dropdown-list { display: grid; min-height: 0; flex: 1 1 auto; overflow-y: auto; overscroll-behavior: contain; }
 .notification-dropdown-item { position: relative; display: flex; align-items: flex-start; gap: 6px; padding: 0 8px 0 0; border-bottom: 1px solid #E8EFEB; }
 .notification-dropdown-item.is-unread { background: #F3F8F5; box-shadow: inset 3px 0 #6FA58D; }
-.notification-dropdown-item > a { display: grid; min-width: 0; flex: 1; gap: 4px; padding: 12px 10px 12px 15px; color: inherit; text-decoration: none; }
-.notification-dropdown-item > a:hover .notification-dropdown-title { color: #084884; text-decoration: underline; }
-.notification-dropdown-title { color: #16334A; font-size: .78rem; font-weight: 800; }
+.notification-dropdown-copy { display: grid; min-width: 0; flex: 1; gap: 4px; padding: 12px 10px 12px 15px; }
+.notification-dropdown-title { width: fit-content; color: #16334A; font-size: .78rem; font-weight: 800; text-decoration: none; }
+.notification-dropdown-title:hover { color: #084884; text-decoration: underline; }
+.notification-dropdown-title:focus-visible { border-radius: 2px; outline: 3px solid #6FA58D; outline-offset: 3px; }
 .notification-dropdown-message { color: #526773; font-size: .73rem; line-height: 1.4; }
 .notification-dropdown-item time { color: #74858D; font-size: .65rem; }
 .notification-mark-read { display: grid; width: 30px; height: 30px; flex: 0 0 30px; place-items: center; margin-top: 10px; border: 1px solid #D8E4DE; border-radius: 5px; background: #FFFFFF; color: #39775F; }
@@ -884,6 +888,9 @@ h1 em, h2 em { color: #8B5C15; font-style: italic; }
 .notification-row.is-unread { background: #FCFBF8; }
 .notification-icon { display: grid; width: 38px; height: 38px; flex: 0 0 38px; place-items: center; background: var(--ivory); color: var(--navy); }
 .notification-content { flex: 1; min-width: 0; }
+.notification-content a { color: inherit; text-decoration: none; }
+.notification-content a:hover { color: #084884; text-decoration: underline; }
+.notification-content a:focus-visible { border-radius: 2px; outline: 3px solid #6FA58D; outline-offset: 3px; }
 .notification-title-row { display: flex; align-items: baseline; justify-content: space-between; gap: 15px; }
 .notification-title-row h2 { margin: 0; font-family: var(--sans); font-size: .98rem; font-weight: 800; }
 .notification-title-row time { color: var(--muted); font-size: .76rem; white-space: nowrap; }

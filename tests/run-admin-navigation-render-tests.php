@@ -49,6 +49,20 @@ $_SERVER['REQUEST_URI'] = '/staff/users/staff';
 ob_start();
 require dirname(__DIR__) . '/resources/views/layout.php';
 $adminMarkup = (string) ob_get_clean();
+$assert(str_contains($adminMarkup, 'href="/admin/archive"') && str_contains($adminMarkup, '>Archive</span>'), 'administrator sidebar exposes the dedicated Archive destination');
+$notificationLayoutSource = (string) file_get_contents(dirname(__DIR__) . '/resources/views/layout.php');
+$notificationViewSource = (string) file_get_contents(dirname(__DIR__) . '/resources/views/student/notifications.php');
+$notificationStyles = (string) file_get_contents(dirname(__DIR__) . '/public/assets/css/app.css');
+$assert(str_contains($notificationLayoutSource, "href=\"<?= e(\$notice['href']) ?>\"") && !str_contains($notificationLayoutSource, 'href="/notifications#<?= e($noticeAnchor) ?>"'), 'bell dropdown title follows each notification service destination instead of routing all notices to Notifications');
+$assert(str_contains($notificationLayoutSource, '<h2><a href="/notifications">Notifications</a></h2>') && str_contains($notificationLayoutSource, '<span class="notification-dropdown-message"><?= e($notice[\'message\']) ?></span>') && !str_contains($notificationLayoutSource, 'href="/notifications#<?= e($noticeAnchor) ?>"'), 'dropdown heading links to full Notifications page and dropdown messages remain plain text');
+$assert(str_contains($notificationViewSource, 'data-notification-link') && str_contains($notificationViewSource, "<h2><a href=\"<?= e(\$notification['href']) ?>\"") && str_contains($notificationViewSource, '<p><?= e($notification[\'message\']) ?></p>') && !str_contains($notificationViewSource, 'notification-message-link'), 'full Notifications page keeps titles clickable while rendering messages as normal text');
+$assert(str_contains($notificationStyles, '.notification-content a:focus-visible') && str_contains($notificationStyles, '.notification-dropdown-title:focus-visible') && str_contains($notificationStyles, '.notification-dropdown-heading h2 a:focus-visible'), 'notification titles and header Notifications link retain visible keyboard focus styling');
+$_SERVER['REQUEST_URI'] = '/staff/application/2';
+ob_start();
+require dirname(__DIR__) . '/resources/views/layout.php';
+$applicationDetailLayoutMarkup = (string) ob_get_clean();
+$assert(str_contains($applicationDetailLayoutMarkup, 'class="app-sidebar-link is-active" href="/admin/applications"'), 'application notification destination activates Applications in administrator sidebar');
+$_SERVER['REQUEST_URI'] = '/staff/users/staff';
 
 foreach ([
     '/staff/users/administrators',
@@ -72,7 +86,12 @@ $fixtureUser = ['id' => 2, 'full_name' => 'Fixture Reviewer', 'role' => 'reviewe
 ob_start();
 require dirname(__DIR__) . '/resources/views/layout.php';
 $reviewerMarkup = (string) ob_get_clean();
-$assert(!str_contains($reviewerMarkup, 'User Administration') && !str_contains($reviewerMarkup, 'Academic Settings'), 'reviewers do not receive administrator navigation groups');
+$assert(!str_contains($reviewerMarkup, 'User Administration') && !str_contains($reviewerMarkup, 'Academic Settings') && !str_contains($reviewerMarkup, 'href="/admin/archive"'), 'reviewers do not receive administrator navigation groups or Archive');
+$fixtureUser = ['id' => 2, 'full_name' => 'Fixture Student', 'role' => 'student'];
+ob_start();
+require dirname(__DIR__) . '/resources/views/layout.php';
+$studentMarkup = (string) ob_get_clean();
+$assert(!str_contains($studentMarkup, 'href="/admin/archive"'), 'students do not receive Archive navigation');
 
 $user = ['id' => 1, 'full_name' => 'Fixture Admin', 'role' => 'admin'];
 $programs = [['id' => 4, 'code' => 'ENG', 'name' => 'Engineering', 'description' => 'Engineering program details', 'is_active' => 1, 'application_count' => 3, 'created_at' => '2025-01-01 00:00:00', 'updated_at' => '2025-01-02 00:00:00']];
@@ -128,7 +147,7 @@ $userFilterSource = (string) file_get_contents(dirname(__DIR__) . '/resources/vi
 $assert(str_contains($userFilterSource, 'class="filter-bar user-filter-bar"') && str_contains($userFilterSource, 'data-auto-filter-form') && str_contains($userFilterSource, 'active-filter-chips.php'), 'User Administration retains its existing shared filter and active-chip components');
 $assert(str_contains($userFilterSource, 'action="/staff/user/delete"') && str_contains($userFilterSource, 'data-submit-once') && str_contains($userFilterSource, 'Delete this account permanently? This is allowed only when the account has no admission history. Accounts with history must be deactivated instead.') && str_contains($userFilterSource, 'Deactivate this account?'), 'account deletion and deactivation use CSRF-protected one-shot forms with explicit impact confirmations');
 $applicationQueueSource = (string) file_get_contents(dirname(__DIR__) . '/resources/views/staff/application-queue.php');
-$assert(str_contains($applicationQueueSource, "\$showArchivedFilter = (\$user['role'] ?? '') === 'admin'") && str_contains($applicationQueueSource, 'name="archived"') && str_contains($applicationQueueSource, "'/staff/application/archive'") && str_contains($applicationQueueSource, "'/staff/application/restore'") && str_contains($applicationQueueSource, 'data-confirm='), 'admin queue alone renders the archived filter and confirmed archive/restore actions');
+$assert(!str_contains($applicationQueueSource, 'name="archived"') && !str_contains($applicationQueueSource, 'Archived applications') && str_contains($applicationQueueSource, "'/staff/application/archive'") && str_contains($applicationQueueSource, 'data-confirm='), 'Applications has no archived filter and retains the administrator archive action for active rows');
 $queueRenderContext = static function (array $queueUser, array $queueFilters): string {
     $user = $queueUser;
     if (($user['role'] ?? '') !== 'admin') unset($queueFilters['archived']);
@@ -146,16 +165,30 @@ $queueRenderContext = static function (array $queueUser, array $queueFilters): s
     require dirname(__DIR__) . '/resources/views/staff/application-queue.php';
     return (string) ob_get_clean();
 };
-$adminArchivedQueueMarkup = $queueRenderContext(['id' => 1, 'role' => 'admin'], ['archived' => 'archived']);
-$reviewerArchivedQueueMarkup = $queueRenderContext(['id' => 3, 'role' => 'reviewer'], ['archived' => 'archived']);
-$assert(str_contains($adminArchivedQueueMarkup, 'name="archived"') && str_contains($adminArchivedQueueMarkup, 'Archived applications') && str_contains($adminArchivedQueueMarkup, 'data-clear-filter="archived"') && str_contains($adminArchivedQueueMarkup, 'archived=archived'), 'admin archived filter renders selected state, removable chip, and filter-preserving pagination URL');
-$assert(!str_contains($reviewerArchivedQueueMarkup, 'name="archived"') && !str_contains($reviewerArchivedQueueMarkup, 'data-clear-filter="archived"') && !str_contains($reviewerArchivedQueueMarkup, 'archived=archived'), 'reviewer queue never renders the archived filter, chip, or archived URL state');
+$adminActiveQueueMarkup = $queueRenderContext(['id' => 1, 'role' => 'admin'], ['q' => '']);
+$reviewerActiveQueueMarkup = $queueRenderContext(['id' => 3, 'role' => 'reviewer'], ['q' => '']);
+$assert(str_contains($adminActiveQueueMarkup, 'action="/staff/application/archive"') && !str_contains($adminActiveQueueMarkup, 'name="archived"') && !str_contains($adminActiveQueueMarkup, 'archived=archived'), 'admin queue keeps active-row archive action and has no archive filter or archived links');
+$assert(!str_contains($reviewerActiveQueueMarkup, 'action="/staff/application/archive"') && !str_contains($reviewerActiveQueueMarkup, 'name="archived"') && !str_contains($reviewerActiveQueueMarkup, 'href="/admin/archive"'), 'reviewer queue does not expose Archive navigation, filters, or archive actions');
+$archiveFilters = ['q' => 'AF-ARCH-99', 'status' => 'submitted'];
+$archiveApplications = ['rows' => [['id' => 99, 'full_name' => 'Archived Applicant', 'reference_number' => 'AF-ARCH-99', 'program_name' => 'Engineering', 'previous_status' => 'submitted', 'archived_at' => '2026-10-30 00:00:00']], 'total' => 21, 'filters' => $archiveFilters, 'pagination' => Pagination::make(21, ['per_page' => 10]) + ['base_url' => '/admin/archive', 'query' => $archiveFilters, 'target' => 'archive-records']];
+$archiveViewSource = (string) file_get_contents(dirname(__DIR__) . '/resources/views/staff/archive.php');
+ob_start();
+require dirname(__DIR__) . '/resources/views/staff/archive.php';
+$archiveMarkup = (string) ob_get_clean();
+$assert(str_contains($archiveMarkup, '<h1>Archive</h1>') && str_contains($archiveMarkup, 'Archived Applicant') && str_contains($archiveMarkup, 'AF-ARCH-99') && str_contains($archiveMarkup, 'Engineering') && str_contains($archiveMarkup, 'Previous status') && str_contains($archiveMarkup, 'Oct 30, 2026') && str_contains($archiveMarkup, 'name="q"') && str_contains($archiveMarkup, 'name="status"') && str_contains($archiveMarkup, 'value="submitted" selected') && str_contains($archiveMarkup, 'Search: AF-ARCH-99') && str_contains($archiveMarkup, 'Previous status: Submitted') && str_contains($archiveMarkup, 'data-clear-filter="q"') && str_contains($archiveMarkup, 'data-clear-filter="status"') && str_contains($archiveMarkup, 'href="/admin/archive?per_page=10#archive-records"') && str_contains($archiveMarkup, 'q=AF-ARCH-99&amp;status=submitted&amp;per_page=10&amp;page=2#archive-records') && str_contains($archiveMarkup, 'action="/admin/archive/restore"') && str_contains($archiveMarkup, 'name="_csrf"') && str_contains($archiveViewSource, "require dirname(__DIR__) . '/partials/active-filter-chips.php'"), 'Archive reuses shared applied-filter chips, individual removal, Reset Filters, filter-preserving pagination, and protected restore');
+$archiveApplications = ['rows' => [], 'total' => 0, 'filters' => $archiveFilters, 'pagination' => Pagination::make(0, ['per_page' => 10]) + ['base_url' => '/admin/archive', 'query' => $archiveFilters, 'target' => 'archive-records']];
+ob_start();
+require dirname(__DIR__) . '/resources/views/staff/archive.php';
+$emptyArchiveMarkup = (string) ob_get_clean();
+$assert(str_contains($emptyArchiveMarkup, 'No archived applications match these filters.') && str_contains($emptyArchiveMarkup, 'Reset Filters') && str_contains($emptyArchiveMarkup, 'data-clear-filter="q"') && str_contains($emptyArchiveMarkup, 'data-clear-filter="status"'), 'Archive view shows a clear no-match state and shared applied-filter reset/removal controls');
+$archiveFilterScript = (string) file_get_contents(dirname(__DIR__) . '/public/assets/js/app.js');
+$assert(str_contains($archiveMarkup, 'data-auto-filter-form') && str_contains($archiveMarkup, 'data-filter-change') && str_contains($archiveFilterScript, "const pageKeys = ['page', ...(form.dataset.pageParams || '').split(',').filter(Boolean)]") && str_contains($archiveFilterScript, 'pageKeys.forEach(key => params.delete(key))'), 'changing Archive filters uses the shared auto-filter behavior and resets pagination to page one');
 $detailViewSource = (string) file_get_contents(dirname(__DIR__) . '/resources/views/staff/application-detail.php');
 $applicationDetailCss = (string) file_get_contents(dirname(__DIR__) . '/public/assets/css/app.css');
 $assert(str_contains($detailViewSource, 'class="detail-heading-status-actions"') && str_contains($applicationDetailCss, '.staff-review-page .detail-heading-status-actions { display: flex;') && str_contains($applicationDetailCss, 'align-items: center; justify-content: flex-end; flex-wrap: wrap; gap: 10px;') && str_contains($applicationDetailCss, '.staff-review-page .detail-heading { flex-direction: row; flex-wrap: wrap; }'), 'Application Review keeps status and admin action in a right-aligned responsive flex group');
 $assert(str_contains($detailViewSource, "action=\"<?= \$isArchivedApplication ? '/staff/application/restore' : '/staff/application/archive' ?>\"") && str_contains($detailViewSource, 'name="_csrf"') && str_contains($detailViewSource, 'data-submit-once') && str_contains($detailViewSource, 'data-confirm="<?= $isArchivedApplication ?'), 'application detail exposes CSRF-protected admin archive/restore forms with the shared confirmation hook');
 $assert(str_contains($routeSource, "\$includeArchived = \$user['role'] === 'admin' && (string) (\$_GET['archived'] ?? '') === '1'") && str_contains($routeSource, '$includeArchived);') && str_contains($routeSource, "AuditLog::recordOncePerWindow(\$database, \$user, 'application.viewed'"), 'detail route grants archived lookup only from explicit admin mode and records eligible views');
-$assert(str_contains($routeSource, "if (\$method === 'POST')") && str_contains($routeSource, 'verify_csrf();') && str_contains($routeSource, "\$path === '/staff/user/delete'") && str_contains($routeSource, "\$path === '/staff/application/archive' || \$path === '/staff/application/restore'") && str_contains($routeSource, "\$user['role'] !== 'admin'") && str_contains($routeSource, 'StaffAccountService::delete') && str_contains($routeSource, 'StaffService::archiveApplication') && str_contains($routeSource, 'StaffService::restoreApplication'), 'delete/archive/restore POST handlers retain shared CSRF validation and explicit admin guards before service calls');
+$assert(str_contains($routeSource, "if (\$path === '/admin/archive')") && str_contains($routeSource, "\$user['role'] !== 'admin'") && str_contains($routeSource, 'StaffService::archivedApplications') && str_contains($routeSource, "'/admin/archive/restore'") && str_contains($routeSource, 'verify_csrf();') && str_contains($routeSource, 'http_response_code(403);') && str_contains($routeSource, 'StaffService::archiveApplication') && str_contains($routeSource, 'StaffService::restoreApplication'), 'Archive routes enforce administrator access, return 403 for other roles, and protect restore with CSRF');
 $changedViews = [
     $dropdownPageSources['Academic Management'],
     $dropdownPageSources['Users'],

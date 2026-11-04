@@ -652,6 +652,9 @@ $invalidSubmit = ApplicationService::save($workflowDb, 2, ['full_name' => 'Incom
 $assert(!$invalidSubmit['ok'] && (int) $workflowDb->query('SELECT COUNT(*) FROM applications WHERE student_id=2')->fetchColumn() === 0, 'invalid submission does not create an application');
 
 $workflowDb->exec("INSERT INTO applications (id,student_id,academic_program_id,academic_year_id,status,submitted_at) VALUES (2,2,1,1,'submitted',UTC_TIMESTAMP()),(3,2,1,1,'submitted',UTC_TIMESTAMP())");
+$exactStudentApplication = ApplicationService::current($workflowDb, 2, 3);
+$unauthorizedStudentApplication = ApplicationService::current($workflowDb, 1, 3);
+$assert((int) ($exactStudentApplication['id'] ?? 0) === 3 && $unauthorizedStudentApplication === null, 'optional exact-application lookup selects only the signed-in student owned record');
 $workflowDb->exec("INSERT INTO admission_requirements (id,code,name,instructions,allowed_extensions,max_file_size_bytes,is_active,is_required,sort_order) VALUES (1,'ID','Identity document','Upload a scan','pdf,jpg,png',10485760,1,1,1)");
 $workflowDb->exec("INSERT INTO application_documents (id,application_id,requirement_id,version,storage_name,original_name,detected_mime_type,file_size_bytes,sha256,review_status,uploaded_by,is_current) VALUES (1,2,1,1,'old.pdf','old.pdf','application/pdf',100,'hash','pending',2,1)");
 $assert(is_array(ApplicationService::authorizedCurrentDocument($workflowDb, 2, 1)) && ApplicationService::authorizedCurrentDocument($workflowDb, 1, 1) === null, 'students can preview their own current document but cannot access another student document');
@@ -670,12 +673,27 @@ $adminNotificationFeed = NotificationService::feed($workflowDb, ['id' => 5, 'rol
 $studentNotification = array_values(array_filter($studentNotificationFeed['items'], static fn (array $item): bool => $item['id'] === $studentNotificationId))[0] ?? [];
 $reviewerNotification = array_values(array_filter($reviewerNotificationFeed['items'], static fn (array $item): bool => $item['id'] === $reviewerNotificationId))[0] ?? [];
 $adminNotification = array_values(array_filter($adminNotificationFeed['items'], static fn (array $item): bool => $item['id'] === $adminNotificationId))[0] ?? [];
-$assert($studentNotificationFeed['persistent_unread_count'] === 1 && ($studentNotification['href'] ?? '') === '/portal', 'student feed counts and links only the signed-in studentâ€™s notification');
+$assert($studentNotificationFeed['persistent_unread_count'] === 1 && ($studentNotification['href'] ?? '') === '/portal?application_id=2#application-status-title', 'student application notification opens the exact owned active application');
 $assert($reviewerNotificationFeed['persistent_unread_count'] === 1 && ($reviewerNotification['href'] ?? '') === '/staff/application/2' && !in_array('/staff/application/3', array_column($reviewerNotificationFeed['items'], 'href'), true), 'reviewer feed links assigned work and does not expose another reviewerâ€™s application');
 $assert($adminNotificationFeed['persistent_unread_count'] === 1 && ($adminNotification['href'] ?? '') === '/admin', 'administrator feed routes an unrelated system notice to the admin portal');
+$submittedStudentFeed = NotificationService::feed($workflowDb, ['id' => 1, 'role' => 'student']);
+$submittedStudentNotice = array_values(array_filter($submittedStudentFeed['items'], static fn (array $item): bool => ($item['key'] ?? null) === null && str_contains((string) $item['title'], 'Application submitted')))[0] ?? [];
+$assert(($submittedStudentNotice['href'] ?? '') === '/portal?application_id=' . $draftApplicationId . '#application-status-title', 'application-submitted notification retains its exact application destination');
 $assert(!NotificationService::markRead($workflowDb, ['id' => 1, 'role' => 'student'], $studentNotificationId) && (int) $workflowDb->query('SELECT COUNT(*) FROM notifications WHERE id=' . $studentNotificationId . ' AND read_at IS NULL')->fetchColumn() === 1, 'user cannot mark another accountâ€™s notification as read');
 $assert(NotificationService::markRead($workflowDb, ['id' => 2, 'role' => 'student'], $studentNotificationId) && (int) $workflowDb->query('SELECT COUNT(*) FROM notifications WHERE id=' . $studentNotificationId . ' AND read_at IS NULL')->fetchColumn() === 0, 'authenticated owner can mark one notification as read');
 $assert(NotificationService::markAllRead($workflowDb, ['id' => 3, 'role' => 'reviewer']) === 1 && (int) $workflowDb->query('SELECT COUNT(*) FROM notifications WHERE id=' . $reviewerNotificationId . ' AND read_at IS NULL')->fetchColumn() === 0 && (int) $workflowDb->query('SELECT COUNT(*) FROM notifications WHERE id=' . $adminNotificationId . ' AND read_at IS NULL')->fetchColumn() === 1, 'mark all read is limited to the authenticated account');
+$insertRoleNotification->execute(['user_id' => 2, 'type' => 'missing_documents_test', 'title' => 'Missing documents', 'message' => 'A document needs attention.', 'related_type' => 'application_document', 'related_id' => 1]);
+$documentNotificationFeed = NotificationService::feed($workflowDb, ['id' => 2, 'role' => 'student']);
+$documentNotification = array_values(array_filter($documentNotificationFeed['items'], static fn (array $item): bool => ($item['title'] ?? '') === 'Missing documents'))[0] ?? [];
+$assert(($documentNotification['href'] ?? '') === '/portal?application_id=2#required-documents-title', 'missing-document notification opens the related owned application and its document section');
+$insertRoleNotification->execute(['user_id' => 2, 'type' => 'account_update', 'title' => 'Account updated', 'message' => 'Review your profile.', 'related_type' => 'profile', 'related_id' => 2]);
+$accountNotificationFeed = NotificationService::feed($workflowDb, ['id' => 2, 'role' => 'student']);
+$accountNotification = array_values(array_filter($accountNotificationFeed['items'], static fn (array $item): bool => ($item['title'] ?? '') === 'Account updated'))[0] ?? [];
+$assert(($accountNotification['href'] ?? '') === '/settings/profile', 'account/profile notification opens the profile settings page');
+$insertRoleNotification->execute(['user_id' => 2, 'type' => 'application_status', 'title' => 'Invalid application reference', 'message' => 'Invalid target.', 'related_type' => 'application', 'related_id' => 99999]);
+$invalidDestinationFeed = NotificationService::feed($workflowDb, ['id' => 2, 'role' => 'student']);
+$invalidDestination = array_values(array_filter($invalidDestinationFeed['items'], static fn (array $item): bool => ($item['title'] ?? '') === 'Invalid application reference'))[0] ?? [];
+$assert(($invalidDestination['href'] ?? '') === '/portal', 'invalid or unauthorized application references safely fall back to the signed-in student portal');
 $notificationFixtureInsert = $workflowDb->prepare('INSERT INTO notifications (user_id, type, title, message, related_type, related_id, created_at) VALUES (2, \'application_status\', :title, \'Fixture message\', \'application\', 2, :created_at)');
 for ($notificationIndex = 0; $notificationIndex < 21; $notificationIndex++) {
     $notificationFixtureInsert->execute(['title' => 'Page fixture ' . $notificationIndex, 'created_at' => sprintf('2026-10-%02d 10:00:00', 1 + ($notificationIndex % 20))]);
@@ -977,6 +995,7 @@ $assert($rejection, 'reviewer can reject a document with feedback (' . $rejectio
 $assert($workflowDb->query('SELECT status FROM applications WHERE id=2')->fetchColumn() === 'documents_incomplete', 'rejection moves application to documents-incomplete');
 $adminLiveFeed = NotificationService::feed($workflowDb, $adminUser);
 $attentionAlert = array_values(array_filter($adminLiveFeed['items'], static fn (array $item): bool => ($item['key'] ?? '') === 'admin:applications-attention'))[0] ?? null;
+$assert(($attentionAlert['href'] ?? '') === '/admin/applications?status=documents_incomplete', 'Applications Requiring Attention dashboard notification opens the matching active Applications filter');
 $dismissedKeys = [];
 $dismissResult = is_array($attentionAlert) ? NotificationService::dismissDerived($workflowDb, $adminUser, $attentionAlert['key'], $dismissedKeys) : false;
 $dismissedAdminFeed = NotificationService::feed($workflowDb, $adminUser, $dismissedKeys);

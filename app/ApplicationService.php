@@ -31,12 +31,15 @@ final class ApplicationService
         ];
     }
 
-    public static function current(PDO $database, int $studentId): ?array
+    public static function current(PDO $database, int $studentId, ?int $applicationId = null): ?array
     {
+        $applicationFilter = $applicationId === null ? '' : ' AND a.id = :application_id';
         $statement = $database->prepare(
-            'SELECT a.*, p.name AS program_name, y.label AS academic_year_label FROM applications a LEFT JOIN academic_programs p ON p.id = a.academic_program_id LEFT JOIN academic_years y ON y.id = a.academic_year_id WHERE a.student_id = :student_id AND a.deleted_at IS NULL ORDER BY (a.status = \'draft\') DESC, a.updated_at DESC LIMIT 1'
+            'SELECT a.*, p.name AS program_name, y.label AS academic_year_label FROM applications a LEFT JOIN academic_programs p ON p.id = a.academic_program_id LEFT JOIN academic_years y ON y.id = a.academic_year_id WHERE a.student_id = :student_id AND a.deleted_at IS NULL' . $applicationFilter . ' ORDER BY (a.status = \'draft\') DESC, a.updated_at DESC LIMIT 1'
         );
-        $statement->execute(['student_id' => $studentId]);
+        $parameters = ['student_id' => $studentId];
+        if ($applicationId !== null) $parameters['application_id'] = $applicationId;
+        $statement->execute($parameters);
         $application = $statement->fetch();
 
         return is_array($application) ? $application : null;
@@ -89,9 +92,9 @@ final class ApplicationService
         return $values;
     }
 
-    public static function printableSummary(PDO $database, int $studentId): ?array
+    public static function printableSummary(PDO $database, int $studentId, ?int $applicationId = null): ?array
     {
-        $application = self::current($database, $studentId);
+        $application = self::current($database, $studentId, $applicationId);
         if ($application === null) {
             return null;
         }

@@ -41,7 +41,50 @@ try {
     }
 
     if ($method === 'POST') {
+        if (in_array($path, ['/admin/archive/restore', '/staff/application/archive', '/staff/application/restore'], true)) {
+            $actionUser = current_user();
+            if ($actionUser === null) redirect('/login');
+            if (($actionUser['role'] ?? '') !== 'admin') {
+                http_response_code(403);
+                try {
+                    $isRestoreAttempt = str_ends_with($path, '/restore');
+                    AuditLog::record($database, $actionUser, $isRestoreAttempt ? 'application.restore_blocked' : 'application.archive_blocked', 'application', (int) ($_POST['application_id'] ?? 0) ?: null, 'failure', ['reason' => 'Administrator access is required.'], 'warning');
+                } catch (Throwable $error) {
+                    error_log('[admitflow archive] Denied action could not be audited (' . $error::class . ').');
+                }
+                exit('Administrator access is required to archive or restore applications.');
+            }
+        }
         verify_csrf();
+
+        if (in_array($path, ['/admin/archive/restore', '/staff/application/archive', '/staff/application/restore'], true)) {
+            $user = current_user();
+            if ($user === null) redirect('/login');
+            if (($user['role'] ?? '') !== 'admin') {
+                $isRestoreAttempt = str_ends_with($path, '/restore');
+                http_response_code(403);
+                try {
+                    AuditLog::record($database, $user, $isRestoreAttempt ? 'application.restore_blocked' : 'application.archive_blocked', 'application', (int) ($_POST['application_id'] ?? 0) ?: null, 'failure', ['reason' => 'Administrator access is required.'], 'warning');
+                } catch (Throwable $error) {
+                    error_log('[admitflow archive] Denied action could not be audited (' . $error::class . ').');
+                }
+                exit('Administrator access is required to archive or restore applications.');
+            }
+            if ($path === '/admin/archive/restore') {
+                $applicationId = filter_var($_POST['application_id'] ?? null, FILTER_VALIDATE_INT, ['options' => ['min_range' => 1]]);
+                if ($applicationId === false) {
+                    flash('warning', 'Choose a valid application.');
+                    redirect('/admin/archive');
+                }
+                try {
+                    StaffService::restoreApplication($database, $user, (int) $applicationId);
+                    flash('success', 'Application restored to active queues.');
+                } catch (DomainException $error) {
+                    flash('warning', $error->getMessage());
+                }
+                redirect('/admin/archive');
+            }
+        }
 
         if ($path === '/register') {
             $result = AuthService::register($database, $_POST);
@@ -317,10 +360,10 @@ try {
                         else StaffService::archiveApplication($database, $user, (int) $applicationId);
                     } catch (DomainException $error) {
                         flash('warning', $error->getMessage());
-                        redirect('/admin/applications?archived=' . ($isRestore ? 'archived' : 'active'));
+                        redirect($isRestore ? '/admin/archive' : '/admin/applications');
                     }
                     flash('success', $isRestore ? 'Application restored to active queues.' : 'Application archived. Its history and documents were retained.');
-                    redirect('/admin/applications?archived=active');
+                    redirect($isRestore ? '/admin/archive' : '/admin/applications');
                 }
                 if ($path === '/staff/program/save') {
                     if ($user['role'] !== 'admin') {
@@ -1061,8 +1104,20 @@ try {
 
     if ($path === '/portal') {
         $user = require_student();
-        $application = ApplicationService::current($database, (int) $user['id']);
-        $printableApplication = $application === null ? null : ApplicationService::printableSummary($database, (int) $user['id']);
+        $requestedApplicationId = null;
+        if (array_key_exists('application_id', $_GET)) {
+            $requestedApplicationId = filter_var($_GET['application_id'], FILTER_VALIDATE_INT, ['options' => ['min_range' => 1]]);
+            if ($requestedApplicationId === false) {
+                http_response_code(404);
+                exit('Application not found.');
+            }
+        }
+        $application = ApplicationService::current($database, (int) $user['id'], $requestedApplicationId);
+        if ($requestedApplicationId !== null && $application === null) {
+            http_response_code(404);
+            exit('Application not found.');
+        }
+        $printableApplication = $application === null ? null : ApplicationService::printableSummary($database, (int) $user['id'], $requestedApplicationId);
         $documents = $application === null ? [] : ApplicationService::documents($database, (int) $user['id'], (int) $application['id']);
         $notices = AnnouncementService::activeForUser($database, $user, 3);
         $interviews = $application === null ? [] : ApplicationService::interviews($database, (int) $user['id'], (int) $application['id']);
@@ -1115,6 +1170,27 @@ try {
         exit;
     }
 
+    if ($path === '/admin/archive') {
+        $user = current_user();
+        if ($user === null) {
+            redirect('/login');
+        }
+        if ($user['role'] !== 'admin') {
+            http_response_code(403);
+            render_page('errors/not-ready', ['title' => 'Administrator access required', 'message' => 'Administrator access is required to open the application archive.']);
+            exit;
+        }
+        try {
+            $archiveApplications = StaffService::archivedApplications($database, $user, $_GET);
+        } catch (DomainException $error) {
+            http_response_code(422);
+            render_page('errors/not-ready', ['title' => 'Check archive search', 'message' => $error->getMessage()]);
+            exit;
+        }
+        render_page('staff/archive', ['title' => 'Application Archive', 'user' => $user, 'archiveApplications' => $archiveApplications]);
+        exit;
+    }
+
     if ($path === '/staff/applications') {
         $user = current_user();
         if ($user === null) {
@@ -1156,9 +1232,21 @@ try {
 
     if ($path === '/application') {
         $user = require_student();
-        $application = ApplicationService::current($database, (int) $user['id']);
+        $requestedApplicationId = null;
+        if (array_key_exists('application_id', $_GET)) {
+            $requestedApplicationId = filter_var($_GET['application_id'], FILTER_VALIDATE_INT, ['options' => ['min_range' => 1]]);
+            if ($requestedApplicationId === false) {
+                http_response_code(404);
+                exit('Application not found.');
+            }
+        }
+        $application = ApplicationService::current($database, (int) $user['id'], $requestedApplicationId);
+        if ($requestedApplicationId !== null && $application === null) {
+            http_response_code(404);
+            exit('Application not found.');
+        }
         if ($application !== null && $application['status'] !== 'draft') {
-            redirect('/portal');
+            redirect('/portal' . ($requestedApplicationId === null ? '' : '?application_id=' . (int) $requestedApplicationId));
         }
         $profile = AccountSettingsService::profile($database, (int) $user['id']) ?? [];
         if ($application === null) {

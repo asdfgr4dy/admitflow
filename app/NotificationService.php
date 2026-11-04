@@ -216,18 +216,24 @@ final class NotificationService
         }
         if ($relatedType === 'application_document' && $relatedId > 0) {
             if ($role === 'student') {
-                return ApplicationService::authorizedCurrentDocument($database, (int) $user['id'], $relatedId) !== null ? '/portal#required-documents-title' : '/portal';
+                $document = $database->prepare('SELECT a.id FROM application_documents d JOIN applications a ON a.id = d.application_id WHERE d.id = :document_id AND d.is_current = 1 AND a.student_id = :student_id AND a.deleted_at IS NULL LIMIT 1');
+                $document->execute(['document_id' => $relatedId, 'student_id' => (int) $user['id']]);
+                $applicationId = (int) $document->fetchColumn();
+                return $applicationId > 0 ? self::applicationHref($database, $user, $applicationId, 'required-documents-title') : '/portal';
             }
-            $document = StaffService::authorizedDocument($database, $user, $relatedId, false, true);
-            return is_array($document) ? '/staff/application/' . (int) $document['application_id'] : ($role === 'admin' ? '/admin' : '/staff');
+            $document = StaffService::authorizedDocument($database, $user, $relatedId);
+            return is_array($document) ? self::applicationHref($database, $user, (int) $document['application_id']) : ($role === 'admin' ? '/admin' : '/staff');
         }
         if ($relatedType === 'interview' && $relatedId > 0) {
             $query = $database->prepare('SELECT application_id FROM interviews WHERE id = :id LIMIT 1');
             $query->execute(['id' => $relatedId]);
             $applicationId = (int) $query->fetchColumn();
             if ($applicationId > 0) {
-                return self::applicationHref($database, $user, $applicationId);
+                return self::applicationHref($database, $user, $applicationId, 'student-interviews-title');
             }
+        }
+        if (in_array($relatedType, ['user', 'account', 'profile'], true) && $relatedId === (int) ($user['id'] ?? 0)) {
+            return '/settings/profile';
         }
 
         return match ($role) {
@@ -237,7 +243,7 @@ final class NotificationService
         };
     }
 
-    private static function applicationHref(PDO $database, array $user, int $applicationId): string
+    private static function applicationHref(PDO $database, array $user, int $applicationId, string $studentFragment = 'application-status-title'): string
     {
         if ($user['role'] === 'student') {
             $query = $database->prepare('SELECT id, status FROM applications WHERE id = :id AND student_id = :user_id AND deleted_at IS NULL');
@@ -246,10 +252,14 @@ final class NotificationService
             if (!is_array($application)) {
                 return '/portal';
             }
-            return $application['status'] === 'draft' ? '/application' : '/portal';
+            return $application['status'] === 'draft'
+                ? '/application?application_id=' . (int) $application['id'] . '&step=2'
+                : '/portal?application_id=' . (int) $application['id'] . '#' . rawurlencode($studentFragment);
         }
         if ($user['role'] === 'admin') {
-            return '/staff/application/' . $applicationId;
+            $query = $database->prepare('SELECT id FROM applications WHERE id = :id AND deleted_at IS NULL AND status <> \'draft\' LIMIT 1');
+            $query->execute(['id' => $applicationId]);
+            return $query->fetchColumn() ? '/staff/application/' . $applicationId : '/admin';
         }
         $query = $database->prepare('SELECT a.id FROM applications a WHERE a.id = :id AND a.deleted_at IS NULL AND a.status <> \'draft\' AND (NOT EXISTS (SELECT 1 FROM reviewer_assignments assigned WHERE assigned.application_id = a.id AND assigned.unassigned_at IS NULL) OR EXISTS (SELECT 1 FROM reviewer_assignments assigned WHERE assigned.application_id = a.id AND assigned.reviewer_id = :reviewer_id AND assigned.unassigned_at IS NULL))');
         $query->execute(['id' => $applicationId, 'reviewer_id' => $user['id']]);
@@ -285,41 +295,41 @@ final class NotificationService
                 $missing[] = 'full_name';
             }
             if ($missing !== []) {
-                self::addAlert($alerts, 'student:missing-fields:' . $applicationId . ':' . substr(hash('sha256', implode(',', $missing)), 0, 12), 'Complete your application details', 'Some required applicant or academic details are still missing.', '/application');
+                self::addAlert($alerts, 'student:missing-fields:' . $applicationId . ':' . substr(hash('sha256', implode(',', $missing)), 0, 12), 'Complete your application details', 'Some required applicant or academic details are still missing.', '/settings/profile?complete_application=1');
             }
             if (!empty($application['academic_year_id']) && !empty($application['academic_program_id'])) {
                 $missingDocs = self::missingDocuments($database, $application);
                 if ($missingDocs !== []) {
                     $docIds = implode(',', array_column($missingDocs, 'id'));
-                    self::addAlert($alerts, 'student:missing-documents:' . $applicationId . ':' . substr(hash('sha256', $docIds), 0, 12), 'Required documents missing', count($missingDocs) . ' required document' . (count($missingDocs) === 1 ? ' is' : 's are') . ' not uploaded.', '/application?step=2');
+                    self::addAlert($alerts, 'student:missing-documents:' . $applicationId . ':' . substr(hash('sha256', $docIds), 0, 12), 'Required documents missing', count($missingDocs) . ' required document' . (count($missingDocs) === 1 ? ' is' : 's are') . ' not uploaded.', '/application?application_id=' . $applicationId . '&step=2');
                 }
             }
             $applicationDeadline = $database->prepare('SELECT label, application_deadline FROM academic_years WHERE id = :year_id AND is_open = 1');
             $applicationDeadline->execute(['year_id' => $application['academic_year_id']]);
             $openIntake = $applicationDeadline->fetch();
             if (is_array($openIntake) && !empty($openIntake['application_deadline']) && $openIntake['application_deadline'] >= gmdate('Y-m-d') && $openIntake['application_deadline'] <= gmdate('Y-m-d', time() + 14 * 86400)) {
-                self::addAlert($alerts, 'student:application-deadline:' . $applicationId . ':' . $openIntake['application_deadline'], 'Application deadline approaching', 'The configured deadline for your open intake is within 14 days.', '/application');
+                self::addAlert($alerts, 'student:application-deadline:' . $applicationId . ':' . $openIntake['application_deadline'], 'Application deadline approaching', 'The configured deadline for your open intake is within 14 days.', '/application?application_id=' . $applicationId);
             }
         }
         $needsCorrection = $database->prepare('SELECT d.id FROM application_documents d WHERE d.application_id = :application_id AND d.is_current = 1 AND d.review_status IN (\'rejected\', \'action_required\') ORDER BY d.id');
         $needsCorrection->execute(['application_id' => $applicationId]);
         $documentIds = array_map('intval', $needsCorrection->fetchAll(PDO::FETCH_COLUMN));
         if ($documentIds !== []) {
-            self::addAlert($alerts, 'student:document-corrections:' . $applicationId . ':' . substr(hash('sha256', implode(',', $documentIds)), 0, 12), 'Document update required', 'One or more documents need correction or replacement.', '/portal#required-documents-title');
+            self::addAlert($alerts, 'student:document-corrections:' . $applicationId . ':' . substr(hash('sha256', implode(',', $documentIds)), 0, 12), 'Document update required', 'One or more documents need correction or replacement.', '/portal?application_id=' . $applicationId . '#required-documents-title');
         }
         $now = gmdate('Y-m-d H:i:s');
         $future = gmdate('Y-m-d H:i:s', time() + 7 * 86400);
         $interviews = $database->prepare('SELECT i.id, i.starts_at_utc FROM interviews i WHERE i.application_id = :application_id AND i.status = \'scheduled\' AND i.starts_at_utc >= :now AND i.starts_at_utc < :future ORDER BY i.starts_at_utc LIMIT 3');
         $interviews->execute(['application_id' => $applicationId, 'now' => $now, 'future' => $future]);
         foreach ($interviews->fetchAll() as $interview) {
-            self::addAlert($alerts, 'student:interview:' . (int) $interview['id'], 'Upcoming interview', 'You have an interview scheduled within the next 7 days.', '/portal#student-interviews-title', (string) $interview['starts_at_utc']);
+            self::addAlert($alerts, 'student:interview:' . (int) $interview['id'], 'Upcoming interview', 'You have an interview scheduled within the next 7 days.', '/portal?application_id=' . $applicationId . '#student-interviews-title', (string) $interview['starts_at_utc']);
         }
         if ($application['status'] === 'accepted') {
             $enrollment = $database->prepare('SELECT status FROM enrollment_records WHERE application_id = :application_id LIMIT 1');
             $enrollment->execute(['application_id' => $applicationId]);
             $enrollmentStatus = $enrollment->fetchColumn();
             if ($enrollmentStatus !== false && in_array($enrollmentStatus, ['pending', 'in_progress'], true)) {
-                self::addAlert($alerts, 'student:enrollment:' . $applicationId . ':' . $enrollmentStatus, 'Enrollment preparation in progress', 'Your accepted application has enrollment requirements still being prepared.', '/portal');
+                self::addAlert($alerts, 'student:enrollment:' . $applicationId . ':' . $enrollmentStatus, 'Enrollment preparation in progress', 'Your accepted application has enrollment requirements still being prepared.', '/portal?application_id=' . $applicationId . '#application-status-title');
             }
         }
 
@@ -340,16 +350,16 @@ final class NotificationService
         $assignedCount = $count($assigned, ['reviewer_assigned' => $user['id']]);
         $unassignedCount = $count('NOT ' . $assigned, ['reviewer_assigned' => $user['id']]);
         if ($assignedCount > 0) {
-            self::addAlert($alerts, 'reviewer:assigned-submitted:' . (int) $user['id'], 'Assigned applications awaiting review', $assignedCount . ' assigned submitted application' . ($assignedCount === 1 ? ' is' : 's are') . ' awaiting review.', '/staff#applications');
+            self::addAlert($alerts, 'reviewer:assigned-submitted:' . (int) $user['id'], 'Assigned applications awaiting review', $assignedCount . ' assigned submitted application' . ($assignedCount === 1 ? ' is' : 's are') . ' awaiting review.', '/staff/applications?status=submitted');
         }
         if ($unassignedCount > 0) {
-            self::addAlert($alerts, 'reviewer:unassigned-submitted:' . (int) $user['id'], 'Unassigned applications awaiting review', $unassignedCount . ' unassigned submitted application' . ($unassignedCount === 1 ? ' is' : 's are') . ' available in your queue.', '/staff#applications');
+            self::addAlert($alerts, 'reviewer:unassigned-submitted:' . (int) $user['id'], 'Unassigned applications awaiting review', $unassignedCount . ' unassigned submitted application' . ($unassignedCount === 1 ? ' is' : 's are') . ' available in your queue.', '/staff/applications?status=submitted');
         }
         $pending = $database->prepare('SELECT COUNT(*) FROM application_documents d JOIN applications a ON a.id = d.application_id WHERE a.deleted_at IS NULL AND a.status <> \'draft\' AND d.is_current = 1 AND d.review_status = \'pending\' AND ' . $scope);
         $pending->execute($reviewerParameters);
         $pendingCount = (int) $pending->fetchColumn();
         if ($pendingCount > 0) {
-            self::addAlert($alerts, 'reviewer:documents-pending:' . (int) $user['id'], 'Documents awaiting review', $pendingCount . ' uploaded document' . ($pendingCount === 1 ? ' is' : 's are') . ' waiting for review.', '/staff#applications');
+            self::addAlert($alerts, 'reviewer:documents-pending:' . (int) $user['id'], 'Documents awaiting review', $pendingCount . ' uploaded document' . ($pendingCount === 1 ? ' is' : 's are') . ' waiting for review.', '/staff/applications?documents=incomplete');
         }
         $now = gmdate('Y-m-d H:i:s');
         $future = gmdate('Y-m-d H:i:s', time() + 7 * 86400);
@@ -357,12 +367,12 @@ final class NotificationService
         $interviews->execute(['now' => $now, 'future' => $future] + $reviewerParameters);
         $interviewCount = (int) $interviews->fetchColumn();
         if ($interviewCount > 0) {
-            self::addAlert($alerts, 'reviewer:upcoming-interviews:' . (int) $user['id'], 'Upcoming interviews', $interviewCount . ' interview' . ($interviewCount === 1 ? ' is' : 's are') . ' scheduled within the next 7 days.', '/staff#applications');
+            self::addAlert($alerts, 'reviewer:upcoming-interviews:' . (int) $user['id'], 'Upcoming interviews', $interviewCount . ' interview' . ($interviewCount === 1 ? ' is' : 's are') . ' scheduled within the next 7 days.', '/staff/applications?status=interview_scheduled');
         }
         $deadline = $database->prepare('SELECT COUNT(DISTINCT a.id) FROM applications a JOIN academic_years y ON y.id = a.academic_year_id WHERE a.deleted_at IS NULL AND a.status <> \'draft\' AND y.application_deadline >= :today AND y.application_deadline <= :soon AND ' . $scope);
         $deadline->execute(['today' => gmdate('Y-m-d'), 'soon' => gmdate('Y-m-d', time() + 7 * 86400)] + $reviewerParameters);
         if ((int) $deadline->fetchColumn() > 0) {
-            self::addAlert($alerts, 'reviewer:deadlines:' . (int) $user['id'], 'Application deadlines approaching', (int) $deadline->fetchColumn() . ' visible application' . ((int) $deadline->fetchColumn() === 1 ? ' has' : 's have') . ' an intake deadline within 7 days.', '/staff#applications');
+            self::addAlert($alerts, 'reviewer:deadlines:' . (int) $user['id'], 'Application deadlines approaching', (int) $deadline->fetchColumn() . ' visible application' . ((int) $deadline->fetchColumn() === 1 ? ' has' : 's have') . ' an intake deadline within 7 days.', '/staff/applications');
         }
 
         return $alerts;
@@ -373,11 +383,11 @@ final class NotificationService
         $alerts = [];
         $attention = (int) $database->query("SELECT COUNT(*) FROM applications WHERE deleted_at IS NULL AND status = 'documents_incomplete'")->fetchColumn();
         if ($attention > 0) {
-            self::addAlert($alerts, 'admin:applications-attention', 'Applications requiring attention', $attention . ' application' . ($attention === 1 ? ' needs' : 's need') . ' document follow-up.', '/admin#applications');
+            self::addAlert($alerts, 'admin:applications-attention', 'Applications requiring attention', $attention . ' application' . ($attention === 1 ? ' needs' : 's need') . ' document follow-up.', '/admin/applications?status=documents_incomplete');
         }
         $enrollment = (int) $database->query("SELECT COUNT(*) FROM applications a JOIN enrollment_records er ON er.application_id = a.id WHERE a.deleted_at IS NULL AND a.status = 'accepted' AND er.status IN ('pending', 'in_progress')")->fetchColumn();
         if ($enrollment > 0) {
-            self::addAlert($alerts, 'admin:enrollment-tasks', 'Enrollment tasks require action', $enrollment . ' accepted application' . ($enrollment === 1 ? ' has' : 's have') . ' enrollment preparation in progress.', '/admin#applications');
+            self::addAlert($alerts, 'admin:enrollment-tasks', 'Enrollment tasks require action', $enrollment . ' accepted application' . ($enrollment === 1 ? ' has' : 's have') . ' enrollment preparation in progress.', '/admin/applications?status=accepted');
         }
         $deadline = $database->prepare('SELECT id, label, application_deadline FROM academic_years WHERE is_open = 1 AND application_deadline >= :today AND application_deadline <= :soon ORDER BY application_deadline LIMIT 1');
         $deadline->execute(['today' => gmdate('Y-m-d'), 'soon' => gmdate('Y-m-d', time() + 14 * 86400)]);

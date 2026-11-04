@@ -2,7 +2,7 @@
 $statusLabels = ['submitted' => 'Submitted', 'in_screening' => 'In screening', 'documents_incomplete' => 'Documents incomplete', 'interview_scheduled' => 'Interview scheduled', 'accepted' => 'Accepted', 'declined' => 'Declined', 'enrolled' => 'Enrolled'];
 $applicationQueuePath = $user['role'] === 'admin' ? '/admin/applications' : '/staff/applications';
 $isArchivedApplication = !empty($application['is_archived']);
-if ($isArchivedApplication) $applicationQueuePath .= '?archived=archived';
+if ($isArchivedApplication) $applicationQueuePath = '/admin/archive';
 $historyFilters = $application['history_filters'] ?? ['history_q' => '', 'history_status' => '', 'history_start_date' => '', 'history_end_date' => ''];
 $historyDatePreset = in_array($historyFilters['history_date_range'], ['last7', 'last30', 'custom'], true) ? $historyFilters['history_date_range'] : ($historyFilters['history_start_date'] !== '' || $historyFilters['history_end_date'] !== '' ? 'custom' : '');
 $documentHistoryFilters = $application['document_history_filters'] ?? ['document_history_q' => '', 'document_history_status' => '', 'document_history_start_date' => '', 'document_history_end_date' => '', 'document_history_date_range' => ''];

@@ -308,6 +308,10 @@ $assert(str_starts_with($pdfBytes, '%PDF-') && str_starts_with($signaturePdfByte
 $assert($pdfPageCount === 1 && $landscapePdfSize[0] > $landscapePdfSize[1] && $portraitPdfSize[1] > $portraitPdfSize[0] && $invalidPdfSize[0] > $invalidPdfSize[1], 'Dompdf orientation sizes/page count: ' . json_encode(['default' => $landscapePdfSize, 'portrait' => $portraitPdfSize, 'invalid' => $invalidPdfSize, 'pages' => $pdfPageCount]));
 
 $database->exec("INSERT INTO applications (id, reference_number, student_id, academic_program_id, academic_year_id, status, submitted_at, deleted_at) VALUES (98, 'AF-ARCHIVE-ACTIVE', 2, 1, 1, 'submitted', '2026-10-25 02:00:00', NULL), (99, 'AF-ARCHIVE-OLD', 2, 1, 1, 'submitted', '2026-10-24 02:00:00', '2026-10-30 00:00:00')");
+$bulkArchiveInsert = $database->prepare('INSERT INTO applications (id, reference_number, student_id, academic_program_id, academic_year_id, status, submitted_at, deleted_at) VALUES (:id, :reference, 2, 1, 1, :status, :submitted, :archived)');
+for ($archiveId = 300; $archiveId <= 310; $archiveId++) {
+    $bulkArchiveInsert->execute(['id' => $archiveId, 'reference' => 'AF-ARCHIVE-PAGE-' . $archiveId, 'status' => $archiveId === 310 ? 'accepted' : 'submitted', 'submitted' => '2026-10-25 02:00:00', 'archived' => '2026-10-30 00:00:00']);
+}
 $database->exec("INSERT INTO reviewer_assignments VALUES (900, 98, 3, '2026-10-26 00:00:00')");
 $database->exec("INSERT INTO application_status_history VALUES (900, 98, 'submitted', 'in_screening', 3, '2026-10-26 00:00:00')");
 $database->exec("INSERT INTO application_documents VALUES (900, 98, 1, 0, 'verified')");
@@ -328,10 +332,34 @@ $assert(!ApplicationService::canPrintAcceptance(['status' => 'draft']) && !Appli
 $database->exec('DELETE FROM applications WHERE id IN (100, 101)');
 $database->exec('DELETE FROM users WHERE id IN (6, 7)');
 $activeQueue = StaffService::applications($database, $admin, ['per_page' => 100]);
-$archivedQueue = StaffService::applications($database, $admin, ['archived' => 'archived', 'per_page' => 100]);
+$archivedListing = StaffService::archivedApplications($database, $admin, ['q' => 'AF-ARCHIVE-OLD', 'per_page' => 10]);
+$archiveByName = StaffService::archivedApplications($database, $admin, ['q' => 'Student Fixture']);
+$archiveByReference = StaffService::archivedApplications($database, $admin, ['q' => 'AF-ARCHIVE-OLD']);
+$archiveByProgram = StaffService::archivedApplications($database, $admin, ['q' => 'Fixture Program']);
+$archiveByStatus = StaffService::archivedApplications($database, $admin, ['status' => 'accepted']);
+$combinedArchiveFilters = StaffService::archivedApplications($database, $admin, ['q' => 'AF-ARCHIVE-PAGE-', 'status' => 'accepted', 'per_page' => 10]);
+$activeRecordExcluded = StaffService::archivedApplications($database, $admin, ['q' => 'AF-ARCHIVE-ACTIVE']);
+$emptyArchiveSearch = StaffService::archivedApplications($database, $admin, ['q' => 'no-such-record']);
+$archiveSecondPage = StaffService::archivedApplications($database, $admin, ['q' => 'AF-ARCHIVE-PAGE-', 'per_page' => 10, 'page' => 2]);
 $craftedReviewerArchive = StaffService::applications($database, ['id' => 3, 'role' => 'reviewer'], ['archived' => 'archived', 'per_page' => 100]);
 $archivedReport = StaffService::applications($database, $admin, ['archived' => 'archived'], true, true);
-$assert($activeQueue['total'] === 9 && $archivedQueue['total'] === 1 && (int) $archivedQueue['rows'][0]['id'] === 99 && $archivedQueue['filters']['archived'] === 'archived', 'administrator queue filter separates active and archived applications in service results and returned URL filters');
+$archiveDenied = false;
+try {
+    StaffService::archivedApplications($database, ['id' => 3, 'role' => 'reviewer'], []);
+} catch (DomainException) {
+    $archiveDenied = true;
+}
+$studentArchiveDenied = false;
+try {
+    StaffService::archivedApplications($database, ['id' => 2, 'role' => 'student'], []);
+} catch (DomainException) {
+    $studentArchiveDenied = true;
+}
+$database->exec('DELETE FROM applications WHERE id BETWEEN 300 AND 310');
+$assert($activeQueue['total'] === 9 && !isset($activeQueue['filters']['archived']) && $archivedListing['total'] === 1 && (int) $archivedListing['rows'][0]['id'] === 99 && $archivedListing['rows'][0]['previous_status'] === 'submitted' && $archivedListing['rows'][0]['archived_at'] === '2026-10-30 00:00:00', 'archive listing separates soft-archived records and includes their previous status and archive timestamp while the active queue excludes them');
+$assert($archiveByName['total'] === 12 && $archiveByReference['total'] === 1 && $archiveByProgram['total'] === 12 && $archiveByStatus['total'] === 1 && (int) $archiveByStatus['rows'][0]['id'] === 310, 'archive search matches applicant name, reference, and program while previous-status filtering selects matching archived records');
+$assert($combinedArchiveFilters['total'] === 1 && (int) $combinedArchiveFilters['rows'][0]['id'] === 310 && $combinedArchiveFilters['filters'] === ['q' => 'AF-ARCHIVE-PAGE-', 'status' => 'accepted'] && $combinedArchiveFilters['pagination']['query'] === $combinedArchiveFilters['filters'], 'archive search and previous-status filters combine and both values are preserved in pagination metadata');
+$assert($activeRecordExcluded['total'] === 0 && $emptyArchiveSearch['total'] === 0 && $archiveSecondPage['total'] === 11 && $archiveSecondPage['pagination']['page'] === 2 && $archiveSecondPage['pagination']['total_pages'] === 2 && count($archiveSecondPage['rows']) === 1 && (int) $archiveSecondPage['rows'][0]['id'] === 300 && $archiveDenied && $studentArchiveDenied, 'archive remains soft-delete-only, empty searches return no rows, pagination stays filtered, and non-admin access is denied');
 $assert($craftedReviewerArchive['total'] === 8 && !in_array(99, array_map('intval', array_column($craftedReviewerArchive['rows'], 'id')), true) && !isset($craftedReviewerArchive['filters']['archived']) && $archivedReport['total'] === 9 && !in_array(99, array_map('intval', array_column($archivedReport['rows'], 'id')), true), 'reviewer queue remains active-only despite crafted archive filters and reports/print-export data excludes archived rows');
 $archiveDenied = false;
 try {
@@ -350,10 +378,11 @@ try {
 $database->exec('DROP TRIGGER fail_archive_update');
 $assert($archiveFailureCaptured && $database->query('SELECT deleted_at FROM applications WHERE id=98')->fetchColumn() === null && (int) $database->query("SELECT COUNT(*) FROM audit_logs WHERE action='application.archive_failed' AND outcome='failure'")->fetchColumn() === 1, 'unexpected archive failure rolls back and records one sanitized failure audit');
 StaffService::archiveApplication($database, $admin, 98);
+$newlyArchivedListing = StaffService::archivedApplications($database, $admin, ['q' => 'AF-ARCHIVE-ACTIVE']);
 $afterArchive = StaffService::applications($database, $admin, ['per_page' => 100]);
 $archiveAudit = (int) $database->query("SELECT COUNT(*) FROM audit_logs WHERE action='application.archived'")->fetchColumn();
 $relatedHistoryRetained = (int) $database->query('SELECT COUNT(*) FROM reviewer_assignments WHERE id=900 AND application_id=98')->fetchColumn() === 1 && (int) $database->query('SELECT COUNT(*) FROM application_status_history WHERE id=900 AND application_id=98')->fetchColumn() === 1 && (int) $database->query('SELECT COUNT(*) FROM application_documents WHERE id=900 AND application_id=98')->fetchColumn() === 1 && (int) $database->query('SELECT COUNT(*) FROM document_reviews WHERE id=900 AND document_id=900')->fetchColumn() === 1 && (int) $database->query('SELECT COUNT(*) FROM interviews WHERE id=900 AND application_id=98')->fetchColumn() === 1 && (int) $database->query('SELECT COUNT(*) FROM screening_notes WHERE id=900 AND application_id=98')->fetchColumn() === 1;
-$assert($afterArchive['total'] === 8 && $database->query('SELECT deleted_at FROM applications WHERE id=98')->fetchColumn() !== null && $archiveAudit === 1 && $relatedHistoryRetained, 'admin archive sets deleted_at, hides the application from active queue, retains its documents and review history, and writes one audit event');
+$assert($afterArchive['total'] === 8 && $newlyArchivedListing['total'] === 1 && (int) $newlyArchivedListing['rows'][0]['id'] === 98 && $database->query('SELECT deleted_at FROM applications WHERE id=98')->fetchColumn() !== null && $archiveAudit === 1 && $relatedHistoryRetained, 'admin archive sets deleted_at, lists the record in Archive, hides it from active queue, retains history/documents, and writes one audit event');
 $database->exec("CREATE TRIGGER fail_restore_update BEFORE UPDATE OF deleted_at ON applications WHEN OLD.id=98 AND NEW.deleted_at IS NULL BEGIN SELECT RAISE(ABORT, 'synthetic restore failure'); END");
 $restoreFailureCaptured = false;
 try {

@@ -10,7 +10,7 @@ $yearLabels = array_column($years, 'label', 'id');
 $reviewerNames = array_column($reviewers, 'full_name', 'id');
 $showArchivedFilter = ($user['role'] ?? '') === 'admin';
 $showAssignedToFilter = ($user['role'] ?? '') === 'admin';
-$advancedFilterValues = [$datePreset, $showAssignedToFilter ? $filter('assigned_to') : '', $filter('documents'), $showArchivedFilter ? $filter('archived') : ''];
+$advancedFilterValues = [$datePreset, $showAssignedToFilter ? $filter('assigned_to') : '', $filter('documents')];
 $hasAdvancedFilters = count(array_filter($advancedFilterValues)) > 0;
 $activeFilters = [];
 if ($filter('q') !== '') $activeFilters[] = ['key' => 'q', 'label' => 'Search: ' . $filter('q')];
@@ -20,7 +20,6 @@ if ($filter('year_id') !== '') $activeFilters[] = ['key' => 'year_id', 'label' =
 if ($datePreset !== '') $activeFilters[] = ['key' => 'date_range', 'label' => 'Date: ' . ['last7' => 'Last 7 days', 'last30' => 'Last 30 days', 'custom' => 'Custom range'][$datePreset]];
 if ($showAssignedToFilter && $filter('assigned_to') !== '') $activeFilters[] = ['key' => 'assigned_to', 'label' => 'Assigned to: ' . ($filter('assigned_to') === 'unassigned' ? 'Unassigned' : ($reviewerNames[$filter('assigned_to')] ?? 'Selected reviewer'))];
 if ($filter('documents') !== '') $activeFilters[] = ['key' => 'documents', 'label' => 'Documents: ' . ($filter('documents') === 'complete' ? 'All verified' : 'Needs attention')];
-if ($showArchivedFilter && $filter('archived') !== '') $activeFilters[] = ['key' => 'archived', 'label' => 'Applications: ' . ($filter('archived') === 'archived' ? 'Archived' : 'Active')];
 $resetUrl = $applicationQueuePath . '?' . http_build_query(array_filter(['per_page' => (string) ($applications['pagination']['page_size'] ?? '')], static fn (string $value): bool => $value !== '')) . '#applications';
 ?>
 <form method="get" action="<?= e($applicationQueuePath) ?>" class="application-filters" data-auto-filter-form data-filter-target="applications">
@@ -39,7 +38,6 @@ $resetUrl = $applicationQueuePath . '?' . http_build_query(array_filter(['per_pa
                 <div class="application-filter"><label for="date_range">Date Range <span class="application-filter-context">Submitted date</span></label><select class="form-select" id="date_range" name="date_range" data-date-preset><option value="">Any date</option><option value="last7" <?= $datePreset === 'last7' ? 'selected' : '' ?>>Last 7 days</option><option value="last30" <?= $datePreset === 'last30' ? 'selected' : '' ?>>Last 30 days</option><option value="custom" <?= $datePreset === 'custom' ? 'selected' : '' ?>>Custom range</option></select><div class="application-custom-dates" data-custom-range <?= $datePreset === 'custom' ? '' : 'hidden' ?>><div><label class="visually-hidden" for="start_date">Start date</label><input class="form-control" id="start_date" name="start_date" type="date" value="<?= e($filter('start_date')) ?>" aria-label="Start date" data-range-start></div><span aria-hidden="true">to</span><div><label class="visually-hidden" for="end_date">End date</label><input class="form-control" id="end_date" name="end_date" type="date" value="<?= e($filter('end_date')) ?>" aria-label="End date" data-range-end></div><small>Dates use Asia/Manila calendar days; filtering remains on submitted_at.</small></div></div>
             <?php if ($showAssignedToFilter): ?><div class="application-filter"><label for="assigned_to">Assigned to</label><select class="form-select" id="assigned_to" name="assigned_to" data-filter-change><option value="" <?= $filter('assigned_to') === '' ? 'selected' : '' ?>>All</option><option value="unassigned" <?= $filter('assigned_to') === 'unassigned' ? 'selected' : '' ?>>Unassigned</option><?php foreach ($reviewers as $reviewer): ?><option value="<?= (int) $reviewer['id'] ?>" <?= $filter('assigned_to') === (string) $reviewer['id'] ? 'selected' : '' ?>><?= e($reviewer['full_name']) ?></option><?php endforeach; ?></select></div><?php endif; ?>
             <div class="application-filter"><label for="documents">Document Completion</label><select class="form-select" id="documents" name="documents" data-filter-change><option value="">Any completion</option><option value="complete" <?= $filter('documents') === 'complete' ? 'selected' : '' ?>>All verified</option><option value="incomplete" <?= $filter('documents') === 'incomplete' ? 'selected' : '' ?>>Needs attention</option></select></div>
-            <?php if ($showArchivedFilter): ?><div class="application-filter"><label for="archived">Application records</label><select class="form-select" id="archived" name="archived" data-filter-change><option value="active" <?= $filter('archived') !== 'archived' ? 'selected' : '' ?>>Active applications</option><option value="archived" <?= $filter('archived') === 'archived' ? 'selected' : '' ?>>Archived applications</option></select></div><?php endif; ?>
         </div>
     </section>
 

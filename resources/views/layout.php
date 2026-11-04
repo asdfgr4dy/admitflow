@@ -41,6 +41,7 @@ if ($signedInUser !== null) {
         'admin' => [
             ['label' => 'Overview', 'href' => '/admin', 'icon' => 'bi-grid-1x2'],
             ['label' => 'Applications', 'href' => '/admin/applications', 'icon' => 'bi-folder2-open'],
+            ['label' => 'Archive', 'href' => '/admin/archive', 'icon' => 'bi-archive'],
             ['label' => 'Reports', 'href' => '/staff/reports', 'icon' => 'bi-bar-chart-line'],
             ['label' => 'Announcement Center', 'href' => '/staff/announcements', 'icon' => 'bi-megaphone'],
             ['label' => 'User Administration', 'icon' => 'bi-people', 'group' => 'user-administration', 'children' => [
@@ -165,17 +166,17 @@ if ($signedInUser !== null) {
                         <i class="bi bi-bell" aria-hidden="true"></i><?php if ($notificationFeed['unread_count'] > 0): ?><span class="notification-badge"><?= (int) $notificationFeed['unread_count'] > 99 ? '99+' : (int) $notificationFeed['unread_count'] ?></span><?php endif; ?>
                     </button>
                     <section class="notification-dropdown" id="notification-panel" aria-label="Notifications" data-notification-panel hidden>
-                        <div class="notification-dropdown-heading"><div><p class="eyebrow">Account updates</p><h2>Notifications</h2></div><span data-notification-unread-count><?= (int) $notificationFeed['unread_count'] ?> unread</span></div>
+                        <div class="notification-dropdown-heading"><div><p class="eyebrow">Account updates</p><h2><a href="/notifications">Notifications</a></h2></div><span data-notification-unread-count><?= (int) $notificationFeed['unread_count'] ?> unread</span></div>
                         <?php if ($notificationFeed['items'] !== []): ?>
                             <div class="notification-dropdown-list">
                                 <?php foreach ($notificationFeed['items'] as $notice): ?>
                                     <?php $noticeTime = (new DateTimeImmutable($notice['created_at'], new DateTimeZone('UTC')))->setTimezone(new DateTimeZone('Asia/Manila')); $noticeAnchor = 'notification-' . (!empty($notice['derived']) ? 'derived-' . substr(hash('sha256', (string) $notice['key']), 0, 16) : (string) (int) $notice['id']); ?>
                                     <article class="notification-dropdown-item <?= $notice['read_at'] ? '' : 'is-unread' ?>">
-                                        <a href="/notifications#<?= e($noticeAnchor) ?>" data-notification-link <?= !empty($notice['derived']) ? 'data-derived-key="' . e($notice['key']) . '"' : 'data-notification-id="' . (int) $notice['id'] . '"' ?>>
-                                            <span class="notification-dropdown-title"><?= e($notice['title']) ?></span>
+                                        <div class="notification-dropdown-copy">
+                                            <a class="notification-dropdown-title" href="<?= e($notice['href']) ?>" data-notification-link <?= empty($notice['read_at']) ? (!empty($notice['derived']) ? 'data-derived-key="' . e($notice['key']) . '"' : 'data-notification-id="' . (int) $notice['id'] . '"') : '' ?>><?= e($notice['title']) ?></a>
                                             <span class="notification-dropdown-message"><?= e($notice['message']) ?></span>
                                             <time datetime="<?= e($noticeTime->format(DateTimeInterface::ATOM)) ?>"><?= e($noticeTime->format('M j, g:i A')) ?> Asia/Manila</time>
-                                        </a>
+                                        </div>
                                         <?php if (!$notice['read_at']): ?><button type="button" class="notification-mark-read" aria-label="Mark <?= e($notice['title']) ?> as read" data-notification-mark <?= !empty($notice['derived']) ? 'data-derived-key="' . e($notice['key']) . '"' : 'data-notification-id="' . (int) $notice['id'] . '"' ?>><i class="bi bi-check2" aria-hidden="true"></i></button><?php endif; ?>
                                     </article>
                                 <?php endforeach; ?>

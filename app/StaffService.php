@@ -346,14 +346,6 @@ final class StaffService
         self::requireStaff($user);
         $where = ["a.deleted_at IS NULL", "a.status <> 'draft'"];
         $parameters = [];
-        $archivedFilter = '';
-        if (!$allRows && ($user['role'] ?? '') === 'admin') {
-            $archivedFilter = trim((string) ($input['archived'] ?? ''));
-            if (!in_array($archivedFilter, ['', 'active', 'archived'], true)) {
-                throw new DomainException('Choose a valid archived application filter.');
-            }
-            $where[0] = $archivedFilter === 'archived' ? 'a.deleted_at IS NOT NULL' : 'a.deleted_at IS NULL';
-        }
         if ($user['role'] !== 'admin') {
             $where[] = '(active_assignment.reviewer_id = :queue_reviewer_id OR active_assignment.reviewer_id IS NULL)';
             $parameters['queue_reviewer_id'] = $user['id'];
@@ -548,9 +540,8 @@ final class StaffService
 
         $filters = $input;
         if (!$allRows && ($user['role'] ?? '') === 'admin') {
-            $filters['archived'] = $archivedFilter;
             $filters['assigned_to'] = $assignedTo;
-            unset($filters['reviewer_id']);
+            unset($filters['reviewer_id'], $filters['archived']);
         } else {
             unset($filters['archived'], $filters['assigned_to']);
             if (!$allRows) unset($filters['reviewer_id']);
@@ -560,6 +551,44 @@ final class StaffService
         $filters['report_sort'] = $sortKey;
         $filters['report_direction'] = $sortDirection;
         return ['rows' => $statement->fetchAll(), 'total' => $totalApplications, 'table_total' => $rowTotal, 'summary' => $summary, 'truncated' => $allRows && !$paginateAllRows && $rowTotal > $pageSize, 'page' => $pagination['page'], 'page_size' => $pageSize, 'pagination' => $pagination, 'filters' => $filters];
+    }
+
+    public static function archivedApplications(PDO $database, array $user, array $input): array
+    {
+        if (($user['role'] ?? '') !== 'admin') {
+            throw new DomainException('Administrator access is required to view archived applications.');
+        }
+        $search = trim((string) ($input['q'] ?? ''));
+        if (mb_strlen($search) > 160) {
+            throw new DomainException('Keep the archive search under 160 characters.');
+        }
+        $status = trim((string) ($input['status'] ?? ''));
+        $validStatuses = ['draft', 'submitted', 'in_screening', 'documents_incomplete', 'interview_scheduled', 'accepted', 'declined', 'enrolled'];
+        if ($status !== '' && !in_array($status, $validStatuses, true)) {
+            throw new DomainException('Choose a valid previous application status.');
+        }
+        $where = ['a.deleted_at IS NOT NULL'];
+        $parameters = [];
+        if ($search !== '') {
+            $where[] = '(u.full_name LIKE :search_name OR a.reference_number LIKE :search_reference OR p.name LIKE :search_program)';
+            $like = '%' . $search . '%';
+            $parameters = ['search_name' => $like, 'search_reference' => $like, 'search_program' => $like];
+        }
+        if ($status !== '') {
+            $where[] = 'a.status = :status';
+            $parameters['status'] = $status;
+        }
+        $whereSql = implode(' AND ', $where);
+        $count = $database->prepare('SELECT COUNT(*) FROM applications a JOIN users u ON u.id = a.student_id LEFT JOIN academic_programs p ON p.id = a.academic_program_id WHERE ' . $whereSql);
+        $count->execute($parameters);
+        $pagination = Pagination::make((int) $count->fetchColumn(), $input, 'page', 'per_page', 20);
+        $statement = $database->prepare('SELECT a.id, a.reference_number, a.status AS previous_status, a.deleted_at AS archived_at, u.full_name, p.name AS program_name FROM applications a JOIN users u ON u.id = a.student_id LEFT JOIN academic_programs p ON p.id = a.academic_program_id WHERE ' . $whereSql . ' ORDER BY a.deleted_at DESC, a.id DESC LIMIT ' . $pagination['page_size'] . ' OFFSET ' . $pagination['offset']);
+        $statement->execute($parameters);
+        $filters = ['q' => $search, 'status' => $status];
+        $pagination['base_url'] = '/admin/archive';
+        $pagination['query'] = $filters;
+        $pagination['target'] = 'archive-records';
+        return ['rows' => $statement->fetchAll(), 'total' => (int) $pagination['total'], 'filters' => $filters, 'pagination' => $pagination];
     }
 
     public static function archiveApplication(PDO $database, array $user, int $applicationId): void
