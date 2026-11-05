@@ -18,6 +18,7 @@ require dirname(__DIR__) . '/app/LoginRateLimitPolicy.php';
 require dirname(__DIR__) . '/app/StatusTransitionPolicy.php';
 require dirname(__DIR__) . '/app/UploadPolicy.php';
 require_once dirname(__DIR__) . '/app/AuditLog.php';
+require_once dirname(__DIR__) . '/app/DemoAccountCredentials.php';
 
 header('X-Content-Type-Options: nosniff');
 header('X-Frame-Options: DENY');
@@ -108,6 +109,7 @@ try {
                 'captcha' => AuthService::newCaptcha(),
                 'email' => (string) ($_POST['email'] ?? ''),
                 'cooldownSeconds' => (int) ($result['cooldown_seconds'] ?? 0),
+                'demoLoginIdentities' => DemoAccountCredentials::forLogin(),
             ]);
             exit;
         }
@@ -1056,6 +1058,7 @@ try {
         render_page('auth/login', [
             'title' => 'Sign in',
             'captcha' => AuthService::newCaptcha(),
+            'demoLoginIdentities' => DemoAccountCredentials::forLogin(),
         ]);
         exit;
     }

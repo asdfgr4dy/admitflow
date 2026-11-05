@@ -326,6 +326,22 @@ h1 em, h2 em { color: #8B5C15; font-style: italic; }
 .form-footnote { margin: 22px 0 0; }
 .captcha-question { display: inline-block; margin-left: 8px; padding: 2px 9px; background: var(--ivory); color: var(--navy); font-family: var(--serif); font-size: 1.1rem; }
 .captcha-input { max-width: 150px; margin-bottom: 19px; }
+.demo-login-section { margin-top: 22px; }
+.demo-local-divider { display: flex; align-items: center; gap: 8px; margin-bottom: 9px; color: #596873; font-size: .66rem; font-weight: 700; }
+.demo-local-divider::before, .demo-local-divider::after { height: 1px; flex: 1; background: var(--border); content: ""; }
+.demo-local-tag { padding: 2px 6px; border: 1px solid #CFCAC0; border-radius: 3px; color: var(--navy); font-size: .58rem; line-height: 1.2; }
+.demo-account-details { overflow: hidden; border: 1px solid var(--border); border-radius: 3px; background: var(--white); }
+.demo-account-summary { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 9px 11px; color: var(--navy); cursor: pointer; font-size: .82rem; font-weight: 700; list-style: none; }
+.demo-account-summary::-webkit-details-marker { display: none; }
+.demo-account-summary .bi { transition: transform .15s ease; }
+.demo-account-details[open] .demo-account-summary .bi { transform: rotate(180deg); }
+.demo-account-list { padding: 0 10px 3px; }
+.demo-account-row { display: grid; grid-template-columns: 30px minmax(0, 1fr) auto; align-items: center; gap: 9px; padding: 8px 0; border-top: 1px solid var(--border); }
+.demo-account-avatar { display: grid; width: 30px; height: 30px; place-items: center; border: 1px solid rgba(22,51,74,.16); border-radius: 50%; background: #EFF3F1; color: var(--navy); font-size: .75rem; font-weight: 700; }
+.demo-account-copy { display: grid; min-width: 0; gap: 1px; line-height: 1.25; }
+.demo-account-copy strong { overflow: hidden; color: var(--ink); font-size: .78rem; text-overflow: ellipsis; }
+.demo-account-copy small { color: #596873; font-size: .68rem; }
+.demo-account-use { min-width: 48px; padding: 3px 8px; font-size: .72rem; line-height: 1.25; }
 
 .student-portal, .student-application, .student-notifications { color: #16334A; }
 .student-portal { padding-top: 42px; padding-bottom: 70px; }
@@ -605,6 +621,7 @@ h1 em, h2 em { color: #8B5C15; font-style: italic; }
 .academic-table th a:hover { color: #16334A; }
 .academic-table th a .bi { color: #9BA8A1; font-size: .66rem; }
 .academic-table td { padding: 10px 12px; vertical-align: middle; }
+.admin-application-page .academic-table-wrap { contain: paint; }
 .admin-application-page .academic-table th:last-child, .admin-application-page .academic-table td:last-child { width: 112px; min-width: 112px; }
 .application-row-actions { display: flex; min-width: 84px; flex-direction: column; align-items: stretch; justify-content: center; gap: 6px; }
 .application-row-actions form { width: 100%; margin: 0; }
@@ -1415,6 +1432,8 @@ img.document-preview-media { width: auto; max-width: 100%; height: auto; max-hei
 }
 
 @media (min-width: 768px) and (max-width: 991.98px) {
+    .admin-application-page .application-primary-filters, .admin-application-page .application-advanced-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .admin-application-page .application-primary-filters .search-field, .admin-application-page .application-primary-actions, .admin-application-page .application-advanced-grid > .application-filter:first-child { grid-column: 1 / -1; }
     .metric-grid { grid-template-columns: repeat(3,minmax(0,1fr)); }
     .admin-dashboard-page .metric-grid { grid-template-columns: repeat(4,minmax(0,1fr)); }
     .staff-reports-page .report-summary { grid-template-columns: repeat(2,minmax(0,1fr)); }
@@ -1426,6 +1445,11 @@ img.document-preview-media { width: auto; max-width: 100%; height: auto; max-hei
     .staff-review-page .detail-side { grid-template-columns: repeat(2,minmax(0,1fr)); align-items: start; }
     .admin-settings-page .settings-year-form, .admin-settings-page .settings-year-record { grid-template-columns: repeat(3,minmax(0,1fr)); }
     .admin-settings-page .requirement-create-form, .admin-settings-page .requirement-record { grid-template-columns: repeat(3,minmax(0,1fr)); }
+}
+
+@media (min-width: 992px) and (max-width: 1199.98px) {
+    .admin-application-page .application-primary-filters, .admin-application-page .application-advanced-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .admin-application-page .application-primary-filters .search-field, .admin-application-page .application-primary-actions, .admin-application-page .application-advanced-grid > .application-filter:first-child { grid-column: 1 / -1; }
 }
 
 @media (max-width: 991.98px) {

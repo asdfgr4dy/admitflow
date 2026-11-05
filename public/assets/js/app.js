@@ -1,4 +1,17 @@
 (() => {
+    document.querySelectorAll('[data-demo-login]').forEach(button => {
+        button.addEventListener('click', () => {
+            const emailInput = document.querySelector('#email');
+            const passwordInput = document.querySelector('#password');
+            const demoEmail = button.dataset.demoEmail || '';
+            const demoPassword = button.dataset.demoPassword || '';
+            if (!(emailInput instanceof HTMLInputElement) || !(passwordInput instanceof HTMLInputElement) || !demoEmail || !demoPassword) return;
+            emailInput.value = demoEmail;
+            passwordInput.value = demoPassword;
+            emailInput.focus();
+        });
+    });
+
     const tableDropdownSelector = '.academic-row-actions [data-bs-toggle="dropdown"], .table-responsive [data-bs-toggle="dropdown"], .staff-table-wrap [data-bs-toggle="dropdown"]';
     const openTableDropdownSelector = '.academic-row-actions [data-bs-toggle="dropdown"].show, .table-responsive [data-bs-toggle="dropdown"].show, .staff-table-wrap [data-bs-toggle="dropdown"].show';
     const initializeTableDropdowns = root => {
@@ -514,11 +527,6 @@
             let record = {};
             try { record = JSON.parse(event.currentTarget.dataset.record || '{}'); } catch {}
             openFormDrawer(record, null, '', event.currentTarget.closest('.dropdown')?.querySelector('[data-bs-toggle="dropdown"]') || event.currentTarget);
-        }));
-        document.querySelectorAll('[data-academic-status]').forEach(button => button.addEventListener('click', event => {
-            let record = {};
-            try { record = JSON.parse(button.dataset.record || '{}'); } catch {}
-            openFormDrawer(record, { name: button.dataset.statusField, value: button.dataset.statusValue }, button.dataset.confirm || 'Change this record status?', event.currentTarget.closest('.dropdown')?.querySelector('[data-bs-toggle="dropdown"]') || event.currentTarget);
         }));
         document.querySelectorAll(`[data-drawer-open="${drawerSelector}"]`).forEach(button => button.addEventListener('click', event => {
             let record = {};

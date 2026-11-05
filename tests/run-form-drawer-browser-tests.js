@@ -115,7 +115,7 @@ const { chromium } = require('playwright');
                 <p>Use the row actions to edit or change admission status.</p>
                 <p>Program and requirement settings remain available.</p>
                 <div class="table-responsive staff-table-wrap academic-table-wrap"><table class="table staff-table academic-table"><tbody>
-                    <tr><td>AY Browser Fixture</td><td>Aug 2026</td><td>May 2027</td><td><div class="dropdown academic-row-actions"><button id="academic-actions" class="btn btn-sm btn-outline-navy" type="button" data-bs-toggle="dropdown" aria-expanded="false" aria-label="Actions for AY Browser Fixture">...</button><ul class="dropdown-menu dropdown-menu-end"><li><button class="dropdown-item" type="button" data-academic-edit data-record='{"year_id":77,"label":"AY Browser Fixture","starts_on":"2026-08-01","ends_on":"2027-05-31","is_open":1}'>Edit</button></li><li><button class="dropdown-item" type="button">Close admission period</button></li></ul></div></td></tr>
+                    <tr><td>AY Browser Fixture</td><td>Aug 2026</td><td>May 2027</td><td><div class="dropdown academic-row-actions"><button id="academic-actions" class="btn btn-sm btn-outline-navy" type="button" data-bs-toggle="dropdown" aria-expanded="false" aria-label="Actions for AY Browser Fixture">...</button><ul class="dropdown-menu dropdown-menu-end"><li><button class="dropdown-item" type="button" data-academic-edit data-record='{"year_id":77,"label":"AY Browser Fixture","starts_on":"2026-08-01","ends_on":"2027-05-31","application_deadline":"2027-04-30","is_open":1}'>Edit</button></li><li><form id="deactivate-year" method="post" action="/staff/year/save" data-submit-once><input type="hidden" name="_csrf" value="fixture-token"><input type="hidden" name="year_id" value="77"><input type="hidden" name="label" value="AY Browser Fixture"><input type="hidden" name="starts_on" value="2026-08-01"><input type="hidden" name="ends_on" value="2027-05-31"><input type="hidden" name="application_deadline" value="2027-04-30"><input type="hidden" name="is_open" value="0"><button class="dropdown-item" type="submit" data-confirm="Close applications for this year?">Close admission period</button></form></li></ul></div></td></tr>
                 </tbody></table></div>
             </main>
             <div id="academicRecordDrawer" class="offcanvas offcanvas-end admitflow-form-drawer" tabindex="-1" data-form-drawer data-record-label="academic year" data-open="false" data-editing="false">
@@ -129,6 +129,18 @@ const { chromium } = require('playwright');
         await dropdownPage.addStyleTag({ path: 'public/assets/css/app.css' });
         await dropdownPage.addScriptTag({ url: 'https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js' });
         await dropdownPage.addScriptTag({ path: 'public/assets/js/app.js' });
+        await dropdownPage.evaluate(() => {
+            window.confirm = () => true;
+            window.academicStatusSubmission = null;
+            document.addEventListener('submit', event => {
+                if (!event.target.matches('#deactivate-year')) return;
+                event.preventDefault();
+                window.academicStatusSubmission = {
+                    action: event.target.getAttribute('action'),
+                    values: Object.fromEntries(new FormData(event.target).entries()),
+                };
+            }, true);
+        });
         await dropdownPage.locator('#academic-actions').scrollIntoViewIfNeeded();
         await dropdownPage.locator('#academic-actions').click();
         await dropdownPage.waitForFunction(() => document.querySelector('#academic-actions')?.classList.contains('show'));
@@ -165,6 +177,21 @@ const { chromium } = require('playwright');
         await dropdownPage.locator('#academic-drawer-close').click();
         await dropdownPage.waitForFunction(() => !document.querySelector('#academicRecordDrawer')?.classList.contains('show'));
         assert.equal(await dropdownPage.evaluate(() => document.activeElement.id), 'academic-actions');
+
+        await dropdownPage.locator('#academic-actions').click();
+        await dropdownPage.locator('#deactivate-year button[type="submit"]').click();
+        const statusSubmission = await dropdownPage.evaluate(() => window.academicStatusSubmission);
+        assert.equal(statusSubmission.action.endsWith('/staff/year/save'), true);
+        assert.deepEqual(statusSubmission.values, {
+            _csrf: 'fixture-token',
+            year_id: '77',
+            label: 'AY Browser Fixture',
+            starts_on: '2026-08-01',
+            ends_on: '2027-05-31',
+            application_deadline: '2027-04-30',
+            is_open: '0',
+        });
+        assert.equal(await dropdownPage.locator('#academicRecordDrawer').evaluate(element => element.classList.contains('show')), false);
 
         await dropdownPage.locator('#academic-actions').click();
         await dropdownPage.keyboard.press('Escape');
