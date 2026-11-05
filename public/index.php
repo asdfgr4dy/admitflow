@@ -109,7 +109,7 @@ try {
                 'captcha' => AuthService::newCaptcha(),
                 'email' => (string) ($_POST['email'] ?? ''),
                 'cooldownSeconds' => (int) ($result['cooldown_seconds'] ?? 0),
-                'demoLoginIdentities' => DemoAccountCredentials::forLogin(),
+                'demoLoginIdentities' => DemoAccountCredentials::forLogin($database),
             ]);
             exit;
         }
@@ -1058,7 +1058,7 @@ try {
         render_page('auth/login', [
             'title' => 'Sign in',
             'captcha' => AuthService::newCaptcha(),
-            'demoLoginIdentities' => DemoAccountCredentials::forLogin(),
+            'demoLoginIdentities' => DemoAccountCredentials::forLogin($database),
         ]);
         exit;
     }

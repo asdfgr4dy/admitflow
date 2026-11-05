@@ -17,6 +17,7 @@
 
 # Private configuration
 /config/database.local.php
+/config/demo-accounts.local.php
 
 # Logs and generated output
 *.log

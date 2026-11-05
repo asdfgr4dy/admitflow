@@ -103,6 +103,24 @@ With `$env:ADMITFLOW_APP_ENV = 'local'` set in PowerShell, create a reviewer or 
 
 Apache must point its document root to the project's `public/` directory and allow the included rewrite rules. Never make the project root, `config/`, or `storage/` publicly accessible. Production requires HTTPS, a supported PHP runtime, a least-privilege DB account, private file storage, protected secrets, and reviewed Apache/PHP settings.
 
+## Hosted Demo Accounts
+
+The login cards use the existing `demo.admin@example.test`, `demo.reviewer@example.test`, and `demo.student@example.test` accounts, as defined in `app/DemoAccountCredentials.php`. Their names and roles are defined there; their account records and password hashes are in the `users` table. The matching plaintext passwords used by the cards and autofill are stored only in the private `config/demo-accounts.local.php` file. Keep that file out of source control and outside the public web root. The similarly named `admin@example.test`, `reviewer@example.test`, and `student@example.test` records noted in the historical smoke-test log are separate preserved accounts; they are not the login-card accounts and their credentials are not changed or used by the cards. The application shows the cards only when all three configured card accounts already exist in the connected database with matching roles and password hashes, and hosted demo mode explicitly matches the configured database host and schema.
+
+Applicant and application test records, related workflow history, and settings are stored in the MySQL/MariaDB database. Uploaded documents and avatars are files under `storage/uploads/` and `storage/avatars/`, not inside the SQL database. To transfer the current evaluation data, first make a backup, then export the complete existing `admitflow` database (structure and data) with phpMyAdmin or a compatible MySQL export tool and import it into a newly created, empty hosting database. Transfer the corresponding private upload and avatar files as well, preserving their stored filenames and directory structure. Take the SQL and file copies from the same point in time so database references continue to match their files.
+
+Do not import `database/schema.sql` or `database/seeds/001_reference_data.sql` over the transferred database, and do not run account-creation or fixture scripts. The demo-account script is verification-only: `php scripts/create-demo-accounts.php --verify-existing` checks the existing records and credential file using read-only queries and never provisions or updates accounts.
+
+On the host, point the web server document root at `public/`. Configure the database through the hosting provider's protected environment settings or a private `config/database.local.php` outside the document root. Set `ADMITFLOW_APP_ENV=production`, the `ADMITFLOW_DB_HOST`, `ADMITFLOW_DB_PORT`, `ADMITFLOW_DB_DATABASE`, `ADMITFLOW_DB_USERNAME`, and `ADMITFLOW_DB_PASSWORD` values for the target database, and `ADMITFLOW_DB_CHARSET=utf8mb4`. Use a dedicated database user with a non-empty password; do not copy the local XAMPP `root` settings. Upload the existing `config/demo-accounts.local.php` securely without changing its values, then set:
+
+```text
+ADMITFLOW_DEMO_MODE=hosted
+ADMITFLOW_DEMO_EXPECTED_DB_HOST=<the exact ADMITFLOW_DB_HOST value>
+ADMITFLOW_DEMO_EXPECTED_DB_NAME=<the exact ADMITFLOW_DB_DATABASE value>
+```
+
+The expected host and schema must match both the configured connection and the database actually selected by MySQL. Keep the demo credential file private; it is required to show/autofill the existing passwords, while the database contains only their password hashes. After deployment, run the verification-only command above from the project directory and confirm it reports all three existing roles. A mismatch fails closed by hiding the demo cards; it does not repair or create accounts. The login page, displayed credentials, and autofill behavior do not need to be changed.
+
 ## HTTPS in production
 
 In production, point Apache at `public/` and allow `.htaccess` rewrites; non-loopback HTTP requests are redirected to HTTPS. If TLS terminates at a trusted reverse proxy, configure it to overwrite `X-Forwarded-Proto` and set `ADMITFLOW_TRUST_PROXY=1` for PHP so session cookies are marked Secure. Leave this setting at `0` unless requests can only reach the app through that trusted proxy. HSTS is sent only for effective HTTPS requests outside local mode and on non-loopback hosts. Local development at `http://127.0.0.1:8000` remains HTTP and receives no HSTS.
@@ -156,7 +174,7 @@ It requires PHP 8.2 with PDO SQLite, OpenSSL, and fileinfo. It creates an in-mem
 9. Verify invalid CAPTCHA/credentials fail and repeated failures are throttled.
 10. Verify upload type/size errors are shown and files are not reachable by guessed public URLs.
 
-Browser smoke tests previously run: homepage/database content and static asset delivery; student registration, CAPTCHA login, draft save, and two-account portal isolation; a complete five-document test submission; reviewer login, application queue, document verification, and status transition; admin report, CSV response, settings/audit views; and active-account session invalidation. The account `qa-replace@example.test` remains active by explicit preservation request; latest read-only check found zero applications and zero documents for it. Current local DB also contains the intentionally created `admin@example.test`, `reviewer@example.test`, and `student@example.test` demonstration accounts; preserve these unless the owner requests otherwise.
+Browser smoke tests previously run: homepage/database content and static asset delivery; student registration, CAPTCHA login, draft save, and two-account portal isolation; a complete five-document test submission; reviewer login, application queue, document verification, and status transition; admin report, CSV response, settings/audit views; and active-account session invalidation. The account `qa-replace@example.test` remains active by explicit preservation request; latest read-only check found zero applications and zero documents for it. The local database also contains `admin@example.test`, `reviewer@example.test`, and `student@example.test` accounts. These are separate preserved records, not the three login-card accounts, whose usernames are the `demo.*@example.test` addresses above.
 
 The XAMPP MariaDB error log previously contained InnoDB assertion failures. Database connectivity is currently responding, but do not delete data files, reset the database, or re-import the schema as a workaround. Follow an approved recovery plan before database maintenance.
 

@@ -34,8 +34,8 @@
         ];
         ?>
         <?php if (!empty($demoLoginIdentities)): ?>
-            <section class="demo-login-section" aria-label="Local demo access">
-                <div class="demo-local-divider"><span>Local demo only</span><span class="demo-local-tag">DEMO</span></div>
+            <section class="demo-login-section" aria-label="Demo accounts">
+                <div class="demo-local-divider"><span>Demo Accounts</span><span class="demo-local-tag">DEMO</span></div>
                 <details class="demo-account-details">
                     <summary class="demo-account-summary"><span>Try a demo account</span><i class="bi bi-chevron-down" aria-hidden="true"></i></summary>
                     <div class="demo-account-list">

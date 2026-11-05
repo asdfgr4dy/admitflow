@@ -35,7 +35,7 @@ final class Database
     public static function environment(): array
     {
         $values = [];
-        foreach (['ADMITFLOW_APP_ENV', 'ADMITFLOW_DB_HOST', 'ADMITFLOW_DB_PORT', 'ADMITFLOW_DB_DATABASE', 'ADMITFLOW_DB_USERNAME', 'ADMITFLOW_DB_PASSWORD', 'ADMITFLOW_DB_CHARSET'] as $name) {
+        foreach (['ADMITFLOW_APP_ENV', 'ADMITFLOW_DB_HOST', 'ADMITFLOW_DB_PORT', 'ADMITFLOW_DB_DATABASE', 'ADMITFLOW_DB_USERNAME', 'ADMITFLOW_DB_PASSWORD', 'ADMITFLOW_DB_CHARSET', 'ADMITFLOW_DEMO_MODE', 'ADMITFLOW_DEMO_EXPECTED_DB_HOST', 'ADMITFLOW_DEMO_EXPECTED_DB_NAME'] as $name) {
             $value = getenv($name);
             if ($value !== false) $values[$name] = $value;
         }
