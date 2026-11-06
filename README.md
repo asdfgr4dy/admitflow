@@ -52,6 +52,9 @@ Not implemented yet: report exports beyond 5,000 rows. Intake progress is a coun
 3. Copy `config/database.example.php` to `config/database.local.php` and set local connection values. This local file is excluded by `.gitignore`. The example uses XAMPP MariaDB port 3307; set the actual port for your instance. Never copy example credentials into production. For deployment, create a least-privilege database user and use protected environment variables or a private config file.
 4. If setting up a clean database, import `database/schema.sql`, then `database/seeds/001_reference_data.sql`. These are setup operations; do not re-import over useful data.
 5. In PowerShell, set `$env:ADMITFLOW_APP_ENV = 'local'` for local XAMPP CLI commands, then run `php scripts/check-database.php`. It verifies connectivity and expected table names using read-only queries. Non-local connections reject the MySQL `root` account and blank passwords.
+
+   For local UI/dashboard demonstrations, run `php scripts/seed-sample-applications.php` in that same local environment. It creates 50 synthetic application records with randomized fictional names and private `SAMPLE ONLY` required-document files, plus a small set of interview and enrollment examples. Eight in-screening applications are assigned to the existing `demo.reviewer@example.test` account for reviewer-queue demonstrations. Sample student accounts are inactive. The command is local-only and safe to rerun; never run it against production data.
+
 6. Install the mail dependency from the project directory:
 
    ```powershell

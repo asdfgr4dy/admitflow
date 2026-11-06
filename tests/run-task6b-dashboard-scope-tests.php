@@ -95,3 +95,4 @@ $assert($reviewerPrograms === ['Program A' => 4, 'Program B' => 2] && $adminProg
 $assert($reviewerStages === ['Submitted' => 1, 'Screening' => 1, 'Interview' => 2, 'Accepted' => 2, 'Declined' => 0, 'Enrolled' => 0] && $adminStages === ['Submitted' => 1, 'Screening' => 2, 'Interview' => 3, 'Accepted' => 2, 'Declined' => 0, 'Enrolled' => 1], 'intake stages exclude Reviewer B-only and archived records while administrator stages include active applications');
 $assert($craftedReviewerCharts['submitted_reviewed'] === $reviewerCharts['submitted_reviewed'] && $craftedReviewerCharts['statuses'] === $reviewerCharts['statuses'] && $craftedReviewerCharts['intake_progress'] === $reviewerCharts['intake_progress'], 'forged reviewer filter fields cannot widen dashboard chart queries');
 fwrite(STDOUT, 'Task 6B dashboard scope tests: ' . $assertions . " assertions, 0 failures.\n");
+    

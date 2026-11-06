@@ -87,11 +87,54 @@ ob_start();
 require dirname(__DIR__) . '/resources/views/layout.php';
 $reviewerMarkup = (string) ob_get_clean();
 $assert(!str_contains($reviewerMarkup, 'User Administration') && !str_contains($reviewerMarkup, 'Academic Settings') && !str_contains($reviewerMarkup, 'href="/admin/archive"'), 'reviewers do not receive administrator navigation groups or Archive');
+$assert(!str_contains($reviewerMarkup, 'href="/portal/archive"'), 'reviewers do not receive student archive navigation');
 $fixtureUser = ['id' => 2, 'full_name' => 'Fixture Student', 'role' => 'student'];
 ob_start();
 require dirname(__DIR__) . '/resources/views/layout.php';
 $studentMarkup = (string) ob_get_clean();
 $assert(!str_contains($studentMarkup, 'href="/admin/archive"'), 'students do not receive Archive navigation');
+$assert(!str_contains($studentMarkup, 'href="/portal/archive"') && !str_contains($studentMarkup, '>Archived drafts</span>'), 'student sidebar no longer exposes archive navigation');
+$assert(!str_contains($adminMarkup, 'href="/portal/archive"'), 'administrators do not receive the student archive page');
+$helpNavigationMarkups = ['admin' => $adminMarkup, 'reviewer' => $reviewerMarkup, 'student' => $studentMarkup];
+foreach ($helpNavigationMarkups as $role => $markup) {
+    $assert(!str_contains($markup, 'data-sidebar-group="help"') && !str_contains($markup, '>Help</span>') && !str_contains($markup, 'Help center'), $role . ' workspace does not show Help navigation');
+}
+$_SERVER['REQUEST_URI'] = '/help/product-requirements';
+foreach ([
+    ['id' => 1, 'full_name' => 'Fixture Admin', 'role' => 'admin'],
+    ['id' => 2, 'full_name' => 'Fixture Reviewer', 'role' => 'reviewer'],
+    ['id' => 3, 'full_name' => 'Fixture Student', 'role' => 'student'],
+] as $fixtureUser) {
+    ob_start();
+    require dirname(__DIR__) . '/resources/views/layout.php';
+    $helpPageNavigation = (string) ob_get_clean();
+    $assert(!str_contains($helpPageNavigation, 'data-sidebar-group="help"') && !str_contains($helpPageNavigation, '>Help</span>'), $fixtureUser['role'] . ' workspace does not show Help navigation on documentation pages');
+}
+$fixtureUser = null;
+$_SERVER['REQUEST_URI'] = '/';
+ob_start();
+require dirname(__DIR__) . '/resources/views/layout.php';
+$landingHelpMarkup = (string) ob_get_clean();
+$assert(str_contains($landingHelpMarkup, '>Help</a>') && str_contains($landingHelpMarkup, 'href="/help/product-requirements"') && str_contains($landingHelpMarkup, 'href="/help/technical-requirements"'), 'landing page exposes both documentation pages through Help');
+$_SERVER['REQUEST_URI'] = '/help/product-requirements';
+ob_start();
+require dirname(__DIR__) . '/resources/views/layout.php';
+$documentPageMarkup = (string) ob_get_clean();
+$assert(!str_contains($documentPageMarkup, '>Help</a>') && !str_contains($documentPageMarkup, 'Technical Requirements</a>'), 'public documentation pages do not show the Help menu');
+$prdMarkup = '';
+ob_start();
+require dirname(__DIR__) . '/resources/views/public/product-requirements.php';
+$prdMarkup = (string) ob_get_clean();
+$assert(str_contains($prdMarkup, '<h1 id="prd-title">Product Requirements Document</h1>') && str_contains($prdMarkup, 'id="overview"') && str_contains($prdMarkup, 'id="users"') && str_contains($prdMarkup, 'id="scope"') && str_contains($prdMarkup, 'id="requirements"') && str_contains($prdMarkup, 'id="workflows"') && str_contains($prdMarkup, 'id="quality"') && str_contains($prdMarkup, 'id="constraints"') && str_contains($prdMarkup, 'id="acceptance"'), 'Product Requirements view renders the document title and every linked section');
+$routeSource = (string) file_get_contents(dirname(__DIR__) . '/public/index.php');
+$prdStyles = (string) file_get_contents(dirname(__DIR__) . '/public/assets/css/app.css');
+$assert(str_contains($routeSource, "if (\$path === '/help/product-requirements')") && str_contains($routeSource, "render_page('public/product-requirements'") && str_contains($prdStyles, '.prd-layout { display: grid;') && str_contains($prdStyles, '.prd-toc a:focus-visible'), 'the PRD route is registered and its responsive layout includes keyboard focus styling');
+$technicalMarkup = '';
+ob_start();
+require dirname(__DIR__) . '/resources/views/public/technical-requirements.php';
+$technicalMarkup = (string) ob_get_clean();
+$assert(str_contains($technicalMarkup, '<h1 id="technical-title">Technical Requirements Document</h1>') && str_contains($technicalMarkup, 'PHP 8.2 or newer') && str_contains($technicalMarkup, 'id="runtime"') && str_contains($technicalMarkup, 'id="architecture"') && str_contains($technicalMarkup, 'id="dependencies"') && str_contains($technicalMarkup, 'id="configuration"') && str_contains($technicalMarkup, 'id="data-storage"') && str_contains($technicalMarkup, 'id="security"') && str_contains($technicalMarkup, 'id="operations"') && str_contains($technicalMarkup, 'id="acceptance"'), 'Technical Requirements view renders the supported baseline and all linked sections');
+$assert(str_contains($routeSource, "if (\$path === '/help/technical-requirements')") && str_contains($routeSource, "render_page('public/technical-requirements'"), 'Technical Requirements has a dedicated public route');
 
 $user = ['id' => 1, 'full_name' => 'Fixture Admin', 'role' => 'admin'];
 $programs = [['id' => 4, 'code' => 'ENG', 'name' => 'Engineering', 'description' => 'Engineering program details', 'is_active' => 1, 'application_count' => 3, 'created_at' => '2025-01-01 00:00:00', 'updated_at' => '2025-01-02 00:00:00']];

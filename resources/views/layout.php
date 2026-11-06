@@ -122,7 +122,7 @@ if ($signedInUser !== null) {
                     }
                     ?>
                     <?php if (isset($link['children'])): ?>
-                        <?php $isGroupActive = $link['group'] === 'user-administration' ? str_starts_with($currentPath, '/staff/users/') : str_starts_with($currentPath, '/staff/academic/'); ?>
+                        <?php $isGroupActive = match ($link['group']) { 'user-administration' => str_starts_with($currentPath, '/staff/users/'), 'academic-settings' => str_starts_with($currentPath, '/staff/academic/'), default => false }; ?>
                         <section class="app-sidebar-group" data-sidebar-group="<?= e($link['group']) ?>" data-active-group="<?= $isGroupActive ? 'true' : 'false' ?>">
                             <button class="app-sidebar-group-toggle<?= $isGroupActive ? ' is-active' : '' ?>" type="button" aria-expanded="<?= $isGroupActive ? 'true' : 'false' ?>" aria-controls="sidebar-group-<?= e($link['group']) ?>" data-sidebar-group-toggle>
                                 <i class="bi <?= e($link['icon']) ?>" aria-hidden="true"></i><span><?= e($link['label']) ?></span><i class="bi bi-chevron-down app-sidebar-group-chevron" aria-hidden="true"></i>
@@ -216,6 +216,7 @@ if ($signedInUser !== null) {
                     <a class="nav-link" href="/#programs">Programs</a>
                     <a class="nav-link" href="/#process">Admission process</a>
                     <a class="nav-link" href="/#requirements">Requirements</a>
+                    <?php if ($currentPath === '/'): ?><div class="nav-item dropdown"><a class="nav-link dropdown-toggle" href="#" role="button" data-bs-toggle="dropdown" aria-expanded="false">Help</a><ul class="dropdown-menu"><li><a class="dropdown-item" href="/help/product-requirements">Product Requirements</a></li><li><a class="dropdown-item" href="/help/technical-requirements">Technical Requirements</a></li><li><a class="dropdown-item" href="/#process">Admission process</a></li></ul></div><?php endif; ?>
                     <a class="btn btn-sm btn-amber ms-lg-2" href="/login"><i class="bi bi-person-circle" aria-hidden="true"></i> Sign in</a>
                     <a class="nav-link" href="/register">Register</a>
                 </div>

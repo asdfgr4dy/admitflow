@@ -918,6 +918,16 @@ try {
         exit;
     }
 
+    if ($path === '/help/product-requirements') {
+        render_page('public/product-requirements', ['title' => 'Product Requirements']);
+        exit;
+    }
+
+    if ($path === '/help/technical-requirements') {
+        render_page('public/technical-requirements', ['title' => 'Technical Requirements']);
+        exit;
+    }
+
     if (preg_match('#^/announcement/(\\d+)$#', $path, $match)) {
         $user = current_user();
         $announcement = AnnouncementService::visibleAnnouncement($database, (int) $match[1], $user);

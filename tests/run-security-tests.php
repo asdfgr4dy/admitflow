@@ -1794,6 +1794,14 @@ $_SESSION = ['user' => ['id' => $userId, 'role' => 'student'], 'csrf_token' => '
 AuthService::logout($database, ['id' => $userId, 'full_name' => 'Fixture One']);
 $assert($_SESSION === [] && session_status() !== PHP_SESSION_ACTIVE, 'logout destroys the session even when the audit write fails');
 
+$workflowDb->exec("INSERT INTO applications (id,student_id,status,deleted_at) VALUES (9901,1,'draft','2026-11-06 00:00:00'),(9902,1,'draft','2026-11-06 00:00:00'),(9903,2,'draft','2026-11-06 00:00:00')");
+AuditLog::record($workflowDb, ['id' => 1, 'full_name' => 'Draft Student'], 'application.draft_discarded', 'application', 9901);
+AuditLog::record($workflowDb, ['id' => 5, 'full_name' => 'Administrator'], 'application.archived', 'application', 9902);
+AuditLog::record($workflowDb, ['id' => 2, 'full_name' => 'Review Student'], 'application.draft_discarded', 'application', 9903);
+$adminArchiveRows = StaffService::archivedApplications($workflowDb, ['id' => 5, 'role' => 'admin'], [])['rows'];
+$adminArchiveIds = array_map('intval', array_column($adminArchiveRows, 'id'));
+$assert(in_array(9901, $adminArchiveIds, true) && in_array(9902, $adminArchiveIds, true) && in_array(9903, $adminArchiveIds, true), 'admin archive includes existing archived records regardless of their historical archive actor');
+
 fwrite(STDOUT, sprintf("Security tests: %d assertions, %d failures\n", $tests, count($failures)));
 foreach ($failures as $failure) fwrite(STDERR, "FAIL: {$failure}\n");
 exit($failures === [] ? 0 : 1);
