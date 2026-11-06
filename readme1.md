@@ -185,15 +185,17 @@ Implement administrator-controlled database and file backup capabilities.
 
 Include:
 
-- Database backup
-- Uploaded-file backup
-- Backup history
+- Weekly automated full backups of the MySQL/MariaDB database and system files
+- System files needed for recovery, including application source, schema/migrations, scripts, uploaded documents, and avatars; exclude local secrets, logs, installed dependencies, and prior backups
+- Administrator-triggered full backup and backup history
 - Backup metadata
 - File size
 - Creation date and time
 - Backup verification
 - Checksum validation
-- Restore confirmation
+- Administrator-confirmed restore of a verified database-and-files backup
+- Automatic pre-restore safety backup and rollback attempt on failure
+- Hosting scheduler instructions for Windows Task Scheduler and hosting cron
 - Success and failure feedback
 
 Protect backup files from direct public access.
@@ -203,6 +205,8 @@ Do not claim that a backup succeeded unless the operation actually completes.
 Do not restore an archive until its integrity has been checked.
 
 Create backups in a location outside the publicly accessible web directory whenever possible.
+
+Keep at least eight weekly full backups by default. Hosting operators must configure the weekly scheduler, provide private writable storage and the required database/archive CLI tools, and keep an off-server copy for recovery from host loss. Restoring database and user files does not replace the deployed application source; deploy the matching source release separately.
 
 ## J. HTTPS and deployment
 

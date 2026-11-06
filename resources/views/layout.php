@@ -55,6 +55,7 @@ if ($signedInUser !== null) {
                 ['label' => 'Requirements', 'href' => '/staff/academic/requirements'],
             ]],
             ['label' => 'Audit log', 'href' => '/staff/audit', 'icon' => 'bi-journal-text'],
+            ['label' => 'Backups', 'href' => '/admin/backups', 'icon' => 'bi-database-check'],
             ['label' => 'Settings', 'href' => '/settings', 'icon' => 'bi-gear'],
         ],
         default => [],

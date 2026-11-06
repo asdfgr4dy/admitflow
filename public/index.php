@@ -1,6 +1,14 @@
 <?php
 declare(strict_types=1);
 
+$maintenanceLock = dirname(__DIR__) . '/storage/.maintenance.lock';
+if (is_file($maintenanceLock)) {
+    http_response_code(503);
+    header('Retry-After: 60');
+    header('Cache-Control: no-store');
+    exit('AdmitFlow is temporarily unavailable while a verified restore is in progress.');
+}
+
 require dirname(__DIR__) . '/app/bootstrap.php';
 require dirname(__DIR__) . '/app/AuthService.php';
 require dirname(__DIR__) . '/app/ApplicationService.php';
@@ -17,6 +25,7 @@ require dirname(__DIR__) . '/app/AvatarService.php';
 require dirname(__DIR__) . '/app/LoginRateLimitPolicy.php';
 require dirname(__DIR__) . '/app/StatusTransitionPolicy.php';
 require dirname(__DIR__) . '/app/UploadPolicy.php';
+require dirname(__DIR__) . '/app/BackupService.php';
 require_once dirname(__DIR__) . '/app/AuditLog.php';
 require_once dirname(__DIR__) . '/app/DemoAccountCredentials.php';
 
@@ -42,6 +51,19 @@ try {
     }
 
     if ($method === 'POST') {
+        if (in_array($path, ['/admin/backups/create', '/admin/backups/verify', '/admin/backups/restore'], true)) {
+            $actionUser = current_user();
+            if ($actionUser === null) redirect('/login');
+            if (($actionUser['role'] ?? '') !== 'admin') {
+                http_response_code(403);
+                try {
+                    AuditLog::record($database, $actionUser, 'backup.action_blocked', 'backup', (int) ($_POST['backup_id'] ?? 0) ?: null, 'failure', ['reason' => 'Administrator access is required.'], 'warning');
+                } catch (Throwable $error) {
+                    error_log('[admitflow backup] Denied action could not be audited (' . $error::class . ').');
+                }
+                exit('Administrator access is required to manage system backups.');
+            }
+        }
         if (in_array($path, ['/admin/archive/restore', '/staff/application/archive', '/staff/application/restore'], true)) {
             $actionUser = current_user();
             if ($actionUser === null) redirect('/login');
@@ -57,6 +79,37 @@ try {
             }
         }
         verify_csrf();
+
+        if (in_array($path, ['/admin/backups/create', '/admin/backups/verify', '/admin/backups/restore'], true)) {
+            $user = current_user();
+            if ($user === null) redirect('/login');
+            if (($user['role'] ?? '') !== 'admin') {
+                http_response_code(403);
+                exit('Administrator access is required to manage system backups.');
+            }
+            try {
+                if ($path === '/admin/backups/create') {
+                    $backup = BackupService::create($database, $user);
+                    flash('success', 'Verified full backup created: ' . $backup['storage_name']);
+                } elseif ($path === '/admin/backups/verify') {
+                    $backupId = filter_var($_POST['backup_id'] ?? null, FILTER_VALIDATE_INT, ['options' => ['min_range' => 1]]);
+                    if ($backupId === false) throw new DomainException('Choose a valid backup.');
+                    $result = BackupService::verify($database, $user, (int) $backupId);
+                    flash('success', $result['message']);
+                } else {
+                    $backupId = filter_var($_POST['backup_id'] ?? null, FILTER_VALIDATE_INT, ['options' => ['min_range' => 1]]);
+                    if ($backupId === false) throw new DomainException('Choose a valid backup.');
+                    BackupService::restore($database, $user, (int) $backupId, (string) ($_POST['confirmation'] ?? ''));
+                    flash('success', 'Backup restored. Sign in again if your account changed in the restored data.');
+                }
+            } catch (DomainException $error) {
+                flash('warning', $error->getMessage());
+            } catch (Throwable $error) {
+                error_log('[admitflow backup] Operation failed (' . $error::class . ').');
+                flash('error', 'The backup operation failed. Review server logs and backup status before retrying.');
+            }
+            redirect('/admin/backups');
+        }
 
         if (in_array($path, ['/admin/archive/restore', '/staff/application/archive', '/staff/application/restore'], true)) {
             $user = current_user();
@@ -1158,6 +1211,55 @@ try {
             exit;
         }
         render_page('staff/dashboard', ['title' => 'Administrator dashboard', 'adminDashboard' => true, 'user' => $user, 'metrics' => $metrics, 'charts' => $charts, 'announcements' => $announcements]);
+        exit;
+    }
+
+    if ($path === '/admin/backups') {
+        $user = current_user();
+        if ($user === null) redirect('/login');
+        if (($user['role'] ?? '') !== 'admin') {
+            http_response_code(403);
+            render_page('errors/not-ready', ['title' => 'Administrator access required', 'message' => 'Administrator access is required to manage system backups.']);
+            exit;
+        }
+        try {
+            $backups = BackupService::list($database);
+            $backupConfiguration = BackupService::configuration();
+        } catch (Throwable $error) {
+            error_log('[admitflow backup] Backup page could not load (' . $error::class . ').');
+            http_response_code(503);
+            render_page('errors/not-ready', ['title' => 'Backups unavailable', 'message' => 'Backup storage or database metadata is unavailable. Check system configuration and server logs.']);
+            exit;
+        }
+        render_page('staff/backups', ['title' => 'Backup and Restore', 'user' => $user, 'backups' => $backups, 'backupConfiguration' => $backupConfiguration]);
+        exit;
+    }
+
+    if ($path === '/admin/backups/download') {
+        $user = current_user();
+        if ($user === null) redirect('/login');
+        if (($user['role'] ?? '') !== 'admin') {
+            http_response_code(403);
+            exit('Administrator access is required to download system backups.');
+        }
+        $backupId = filter_var($_GET['id'] ?? null, FILTER_VALIDATE_INT, ['options' => ['min_range' => 1]]);
+        if ($backupId === false) {
+            http_response_code(404);
+            exit('Backup not found.');
+        }
+        try {
+            $download = BackupService::archiveFile($database, (int) $backupId);
+            AuditLog::record($database, $user, 'backup.downloaded', 'backup', (int) $backupId, 'success', ['file_size_bytes' => $download['size']], 'notice');
+        } catch (DomainException $error) {
+            http_response_code(404);
+            exit('Backup not found or not verified.');
+        }
+        header('Content-Type: application/gzip');
+        header('Content-Length: ' . $download['size']);
+        header('Content-Disposition: attachment; filename="' . $download['name'] . '"');
+        header('Cache-Control: private, no-store');
+        header('X-Content-Type-Options: nosniff');
+        readfile($download['path']);
         exit;
     }
 

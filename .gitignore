@@ -1,5 +1,6 @@
 /config/database.local.php
 /config/demo-accounts.local.php
+/config/backup.local.php
 /config/mail.local.php
 /vendor/
 /storage/logs/*

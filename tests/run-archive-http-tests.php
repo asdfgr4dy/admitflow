@@ -67,6 +67,11 @@ try {
 
     $adminPage = $request('/admin/archive?_test_role=admin');
     $assert($adminPage['status'] === 200 && str_contains($adminPage['body'], '<h1>Archive</h1>'), 'administrator can open the archive page');
+    $adminBackupPage = $request('/admin/backups?_test_role=admin');
+    $assert($adminBackupPage['status'] === 200 && str_contains($adminBackupPage['body'], '<h1>Backup and Restore.</h1>') && str_contains($adminBackupPage['body'], 'Create full backup'), 'administrator can open Backup and Restore and access full-backup controls');
+    $reviewerBackupPage = $request('/admin/backups?_test_role=reviewer');
+    $studentBackupPage = $request('/admin/backups?_test_role=student');
+    $assert($reviewerBackupPage['status'] === 403 && $studentBackupPage['status'] === 403, 'reviewer and student receive HTTP 403 for direct backup page access');
     $searchedPage = $request('/admin/archive?_test_role=admin&q=archive-test-no-match&status=accepted&per_page=10&page=1');
     $assert($searchedPage['status'] === 200 && str_contains($searchedPage['body'], 'No archived applications match these filters.') && str_contains($searchedPage['body'], 'value="accepted" selected') && str_contains($searchedPage['body'], 'Reset Filters'), 'administrator archive search/status filters retain selection and show reset and empty-state content');
     $reviewerPage = $request('/admin/archive?_test_role=reviewer');
@@ -77,8 +82,13 @@ try {
     $reviewerRestore = $request('/admin/archive/restore?_test_role=reviewer', 'POST');
     $studentArchive = $request('/staff/application/archive?_test_role=student', 'POST');
     $assert($reviewerArchive['status'] === 403 && $reviewerRestore['status'] === 403 && $studentArchive['status'] === 403, 'non-admin archive and restore POSTs return 403 before CSRF checks');
+    $reviewerBackupCreate = $request('/admin/backups/create?_test_role=reviewer', 'POST');
+    $reviewerBackupRestore = $request('/admin/backups/restore?_test_role=reviewer', 'POST');
+    $studentBackupVerify = $request('/admin/backups/verify?_test_role=student', 'POST');
+    $assert($reviewerBackupCreate['status'] === 403 && $reviewerBackupRestore['status'] === 403 && $studentBackupVerify['status'] === 403, 'non-admin backup create, verify, and restore POSTs return 403 before CSRF checks');
     $adminArchive = $request('/staff/application/archive?_test_role=admin', 'POST');
-    $assert($adminArchive['status'] === 419, 'administrator archive action still requires a valid CSRF token');
+    $adminBackupCreate = $request('/admin/backups/create?_test_role=admin', 'POST');
+    $assert($adminArchive['status'] === 419 && $adminBackupCreate['status'] === 419, 'administrator archive and backup actions require valid CSRF tokens');
 
     fwrite(STDOUT, 'Archive HTTP tests passed: ' . $assertions . PHP_EOL);
 } finally {

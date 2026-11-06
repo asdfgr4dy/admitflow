@@ -110,7 +110,7 @@ Apache must point its document root to the project's `public/` directory and all
 
 The login cards use the existing `demo.admin@example.test`, `demo.reviewer@example.test`, and `demo.student@example.test` accounts, as defined in `app/DemoAccountCredentials.php`. Their names and roles are defined there; their account records and password hashes are in the `users` table. The matching plaintext passwords used by the cards and autofill are stored only in the private `config/demo-accounts.local.php` file. Keep that file out of source control and outside the public web root. The similarly named `admin@example.test`, `reviewer@example.test`, and `student@example.test` records noted in the historical smoke-test log are separate preserved accounts; they are not the login-card accounts and their credentials are not changed or used by the cards. The application shows the cards only when all three configured card accounts already exist in the connected database with matching roles and password hashes, and hosted demo mode explicitly matches the configured database host and schema.
 
-Applicant and application test records, related workflow history, and settings are stored in the MySQL/MariaDB database. Uploaded documents and avatars are files under `storage/uploads/` and `storage/avatars/`, not inside the SQL database. To transfer the current evaluation data, first make a backup, then export the complete existing `admitflow` database (structure and data) with phpMyAdmin or a compatible MySQL export tool and import it into a newly created, empty hosting database. Transfer the corresponding private upload and avatar files as well, preserving their stored filenames and directory structure. Take the SQL and file copies from the same point in time so database references continue to match their files.
+Applicant and application records are stored in MySQL/MariaDB. Uploaded documents and avatars are private files under `storage/uploads/` and `storage/avatars/`. Use the full backup archive described below to transfer these records together from a consistent recovery point.
 
 Do not import `database/schema.sql` or `database/seeds/001_reference_data.sql` over the transferred database, and do not run account-creation or fixture scripts. The demo-account script is verification-only: `php scripts/create-demo-accounts.php --verify-existing` checks the existing records and credential file using read-only queries and never provisions or updates accounts.
 
@@ -130,7 +130,7 @@ In production, point Apache at `public/` and allow `.htaccess` rewrites; non-loo
 
 ## Database and records
 
-`database/schema.sql` is the current 20-table MySQL/MariaDB schema. It includes users/profiles, academic years/programs/requirements, applications, versioned documents/reviews, assignments, notes, interviews/enrollment, announcements/notifications, status history, audit events, password tokens, login attempts, retained legacy backup metadata, and settings. The legacy `backups` table is intentionally left in place; removing it requires a separately reviewed migration.
+`database/schema.sql` is the current MySQL/MariaDB schema. It includes users/profiles, academic years/programs/requirements, applications, versioned documents/reviews, assignments, notes, interviews/enrollment, announcements/notifications, status history, audit events, password tokens, login attempts, backup history, and settings.
 
 Generated unique keys enforce program/year-scoped requirement codes and a single current version for a requirement on an application. Application history and documents use restrictive foreign keys; application soft-delete support is provided with `deleted_at`.
 
@@ -152,7 +152,15 @@ User-provided institution identity, address, phone, contact email, and office ho
 - Reports use role-scoped application filters, CSV formula-prefix escaping, minimal personal data, and a 5,000-record export cap. Audit events are displayed without edit/delete operations.
 - This is a student project, not a formal security certification. Broader end-to-end security testing remains outstanding.
 
-The Backup and Restore interface, routes, services, and scheduler have been removed. The legacy `backups` metadata table and existing private backup files are intentionally retained. Any future database-table cleanup requires a separately reviewed migration.
+## Backup and restore
+
+Administrators can create, verify, download, and restore full backups at `/admin/backups`. Full archives contain a database dump, application source/schema/scripts and dependency manifests, private uploads, avatars, a manifest, and SHA-256 checksums. Local credentials, installed dependencies, logs, and prior backups are excluded. The default backup directory is `storage/backups/`, outside `public/`; Apache deny rules are included as defense in depth.
+
+The PHP process needs writable private backup storage and working `tar`, `mysqldump`, and `mysql` executables. Configure paths in the ignored `config/backup.local.php` or via `ADMITFLOW_BACKUP_DIRECTORY`, `ADMITFLOW_TAR_PATH`, `ADMITFLOW_MYSQLDUMP_PATH`, and `ADMITFLOW_MYSQL_PATH`. `ADMITFLOW_BACKUP_RETENTION` controls the number of verified full backups to keep (default 8).
+
+For weekly automation, schedule `php scripts/backup.php` from the project root using Windows Task Scheduler locally, or cPanel Cron Jobs/cron on hosting. The app supplies the CLI runner but cannot create the host's schedule. Keep an off-server copy for recovery from host loss. Back up files and database from the same run; do not copy archives into the public web root.
+
+Restore is administrator-only. It accepts only a verified backup, requires typing `RESTORE`, enables maintenance mode, and first creates a safety backup. It replaces the database and the `storage/uploads/` and `storage/avatars/` directories; application source remains at its deployed version and must be deployed from the matching release separately. If rollback fails, maintenance mode stays enabled for operator recovery. Test restores in a separate environment before relying on them for production.
 
 ## Security tests
 

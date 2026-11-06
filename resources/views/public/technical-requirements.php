@@ -86,7 +86,13 @@
                     <li>Ensure the PHP process can write to the required private upload, avatar, log, and local mailbox directories while preventing public or unrelated users from reading private files.</li>
                     <li>Set upload limits deliberately. The documented local server uses <code>upload_max_filesize=10M</code>, <code>post_max_size=60M</code>, and <code>max_file_uploads=10</code>; production values must accommodate approved per-requirement limits and host policy.</li>
                 </ul>
-                <p>The Backup and Restore interface and scheduler are not part of the current application. Operators must provide an independent database and file backup process, restrict access to backups, and test restore procedures. The legacy backup metadata table and retained private backup files do not constitute an operating backup service.</p>
+                <p>Administrators can create and restore verified full backups from <code>/admin/backups</code>. Archives contain a MySQL/MariaDB dump, application source/schema/scripts and dependency manifests, private uploads, avatars, a manifest, and SHA-256 checksums. Local credentials, installed dependencies, logs, and prior backup archives are excluded. The default private destination is <code>storage/backups/</code>; it must remain outside the public web root, with the PHP process allowed to write there.</p>
+                <ul>
+                    <li>Configure <code>config/backup.local.php</code> or protected environment settings for the backup directory and <code>tar</code>, <code>mysqldump</code>, and <code>mysql</code> executable paths. The hosting environment must permit the PHP process to start these commands.</li>
+                    <li>Schedule <code>php scripts/backup.php</code> weekly with Windows Task Scheduler, cPanel Cron Jobs, or the host's equivalent. The application provides the runner but does not create operating-system schedules. Eight verified full backups are retained by default.</li>
+                    <li>Restore is administrator-only, requires a verified archive and explicit confirmation, enables maintenance mode, and creates a fresh safety backup before replacing the database and uploaded-file directories. A failed operation attempts to restore the safety backup; if rollback fails, maintenance mode remains enabled for operator recovery.</li>
+                    <li>The restore operation does not overwrite the currently deployed PHP source. Deploy the matching application release separately. Keep an off-server backup copy to recover from hosting-server loss; the local schedule alone is not off-site disaster protection.</li>
+                </ul>
             </section>
 
             <section class="prd-section" id="security">
@@ -122,7 +128,7 @@
                     <li><i class="bi bi-check2" aria-hidden="true"></i><span>PHP meets the supported baseline and required production extensions are enabled; Composer dependencies install successfully from the release lock file.</span></li>
                     <li><i class="bi bi-check2" aria-hidden="true"></i><span>The database checker reports the expected database and tables, and no setup schema or seed is applied over existing data.</span></li>
                     <li><i class="bi bi-check2" aria-hidden="true"></i><span>The web root is restricted to <code>public/</code>; private configuration, uploads, logs, and backups cannot be fetched over HTTP.</span></li>
-                    <li><i class="bi bi-check2" aria-hidden="true"></i><span>HTTPS, secure session behavior, least-privilege database access, SMTP TLS, secret storage, and independent backup/restore procedures are verified.</span></li>
+                    <li><i class="bi bi-check2" aria-hidden="true"></i><span>HTTPS, secure session behavior, least-privilege database access, SMTP TLS, secret storage, weekly backup scheduling, private/off-server backup storage, and a tested restore procedure are verified.</span></li>
                     <li><i class="bi bi-check2" aria-hidden="true"></i><span>Automated tests pass, and authorized/unauthorized role workflows and responsive core pages have been checked in the target environment.</span></li>
                 </ul>
                 <p class="prd-document-note">Local port numbers, XAMPP paths, credentials, PHP upload overrides, and example SMTP values are environment-specific. Confirm actual production values with the hosting provider; do not copy local settings into production.</p>

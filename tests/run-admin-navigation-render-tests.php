@@ -50,6 +50,7 @@ ob_start();
 require dirname(__DIR__) . '/resources/views/layout.php';
 $adminMarkup = (string) ob_get_clean();
 $assert(str_contains($adminMarkup, 'href="/admin/archive"') && str_contains($adminMarkup, '>Archive</span>'), 'administrator sidebar exposes the dedicated Archive destination');
+$assert(strpos($adminMarkup, 'href="/staff/audit"') < strpos($adminMarkup, 'href="/admin/backups"'), 'administrator sidebar places Backups below Audit log');
 $notificationLayoutSource = (string) file_get_contents(dirname(__DIR__) . '/resources/views/layout.php');
 $notificationViewSource = (string) file_get_contents(dirname(__DIR__) . '/resources/views/student/notifications.php');
 $notificationStyles = (string) file_get_contents(dirname(__DIR__) . '/public/assets/css/app.css');
@@ -190,7 +191,7 @@ $assert(str_contains($queueResponsiveCss, '.admin-application-page .academic-tab
 $assert(str_contains($queueFilterSource, 'academic-table-wrap') && str_contains($queueFilterSource, 'staff-table academic-table') && str_contains((string) file_get_contents(dirname(__DIR__) . '/resources/views/staff/applications.php'), 'academic-management-card'), 'Application Queue reuses the shared page container and compact responsive table');
 $reportViewSource = (string) file_get_contents(dirname(__DIR__) . '/resources/views/staff/reports.php');
 $assert(str_contains($reportViewSource, 'academic-page-heading') && str_contains($reportViewSource, 'academic-table-wrap') && str_contains($reportViewSource, '/staff/reports.csv') && str_contains($reportViewSource, 'data-print-preview-trigger') && str_contains($reportViewSource, 'print-preview-modal.php') && preg_match('/\sdata-print(?:\s|=|>)/', $reportViewSource) === 0, 'Reports keeps shared styling and CSV export while printing through the shared in-page preview modal');
-$assert(!str_contains($adminMarkup, 'Backups') && !str_contains($reviewerMarkup, 'Backups') && !str_contains($routeSource, "'/staff/backups'") && !str_contains($routeSource, "'/staff/backup/"), 'all roles lack Backup/Restore navigation and direct backup paths have no registered handlers');
+$assert(str_contains($adminMarkup, 'href="/admin/backups"') && !str_contains($reviewerMarkup, 'href="/admin/backups"') && str_contains($routeSource, "'/admin/backups'") && str_contains($routeSource, 'BackupService::restore'), 'Backup/Restore navigation and direct handlers are available to administrators only');
 $userFilterSource = (string) file_get_contents(dirname(__DIR__) . '/resources/views/staff/users.php');
 $assert(str_contains($userFilterSource, 'class="filter-bar user-filter-bar"') && str_contains($userFilterSource, 'data-auto-filter-form') && str_contains($userFilterSource, 'active-filter-chips.php'), 'User Administration retains its existing shared filter and active-chip components');
 $assert(str_contains($userFilterSource, 'action="/staff/user/delete"') && str_contains($userFilterSource, 'data-submit-once') && str_contains($userFilterSource, 'Delete this account permanently? This is allowed only when the account has no admission history. Accounts with history must be deactivated instead.') && str_contains($userFilterSource, 'Deactivate this account?'), 'account deletion and deactivation use CSRF-protected one-shot forms with explicit impact confirmations');
